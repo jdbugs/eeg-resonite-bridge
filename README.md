@@ -1,2 +1,2 @@
 # eeg-resonite-bridge
-Bridge for sending EEG Date to Resonite over OSC
+Bridge for sending EEG Data to Resonite over OSC
