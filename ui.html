@@ -1,0 +1,905 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>EEG BRIDGE</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=VT323&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:         #060400;
+  --surface:    #0d0800;
+  --surface2:   #130b00;
+  --border:     #2e1e00;
+  --border2:    #1c1200;
+  --text:       #c07818;
+  --text-dim:   #4a3008;
+  --text-bright:#ffcc44;
+  --accent:     #ffaa00;
+  --accent-dim: #2a1500;
+  --good:       #ffd000;
+  --good-dim:   #221600;
+  --warn:       #ff6600;
+  --warn-dim:   #2a0d00;
+  --bad:        #ff2200;
+  --bad-dim:    #280400;
+  --c-delta:    #6b3d00;
+  --c-theta:    #9a5800;
+  --c-lalpha:   #c87a00;
+  --c-halpha:   #e89600;
+  --c-lbeta:    #f5a800;
+  --c-hbeta:    #ff8800;
+  --c-lgamma:   #ff5800;
+  --c-hgamma:   #ff3300;
+}
+
+html, body {
+  height: 100%; background: var(--bg);
+  color: var(--text); font-family: 'Share Tech Mono', monospace;
+  font-size: 12px; overflow: hidden;
+}
+
+/* Phosphor scanlines — alternating faint amber glow / dark gap */
+body::before {
+  content: ''; position: fixed; inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(255,150,0,0.025), rgba(255,150,0,0.025) 2px,
+    rgba(0,0,0,0.18) 2px, rgba(0,0,0,0.18) 4px
+  );
+  pointer-events: none; z-index: 999;
+}
+/* CRT vignette */
+body::after {
+  content: ''; position: fixed; inset: 0;
+  background: radial-gradient(ellipse at 50% 50%, transparent 50%, rgba(0,0,0,0.75) 100%);
+  pointer-events: none; z-index: 998;
+}
+
+/* ── Root layout — fills exactly the viewport ──────────────── */
+.app {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  height: 100vh;
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 8px;
+  gap: 6px;
+}
+
+/* ── Header ─────────────────────────────────────────────────── */
+header {
+  display: flex; align-items: center; justify-content: space-between;
+  border-bottom: 1px solid var(--border); padding-bottom: 6px;
+}
+.title { font-family: 'VT323', monospace; font-size: 26px; color: var(--accent); letter-spacing: 4px; text-shadow: 0 0 12px var(--accent), 0 0 28px rgba(255,170,0,0.35); }
+.title span { color: var(--text-dim); }
+.ws-status { display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--text-dim); }
+.ws-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--bad); transition: background 0.3s; }
+.ws-dot.connected { background: var(--good); box-shadow: 0 0 6px var(--good); }
+
+/* ── Three-column main grid ──────────────────────────────────── */
+.main {
+  display: grid;
+  grid-template-columns: 220px 1fr 268px;
+  gap: 7px;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* ── Panel base ──────────────────────────────────────────────── */
+.panel { background: var(--surface); border: 1px solid var(--border); padding: 10px; }
+.panel-label {
+  font-family: 'VT323', monospace; font-size: 14px; color: var(--accent);
+  letter-spacing: 2px; margin-bottom: 8px; padding-bottom: 4px;
+  border-bottom: 1px solid var(--border2);
+  text-shadow: 0 0 8px rgba(255,170,0,0.4);
+}
+.panel-label::before { content: '> '; color: var(--text-dim); }
+
+/* ── LEFT COLUMN ─────────────────────────────────────────────── */
+.left { display: flex; flex-direction: column; gap: 6px; }
+
+.controls { display: flex; flex-direction: column; gap: 6px; }
+label { display: block; color: var(--text-dim); font-size: 10px; margin-bottom: 2px; }
+
+select, input {
+  width: 100%; background: var(--surface2); border: 1px solid var(--border);
+  color: var(--text-bright); font-family: 'Share Tech Mono', monospace;
+  font-size: 11px; padding: 5px 7px; outline: none;
+  appearance: none; -webkit-appearance: none;
+}
+select:focus, input:focus { border-color: var(--accent); }
+
+.port-row { display: flex; gap: 5px; }
+.port-row select { flex: 1; }
+
+.btn {
+  padding: 6px 10px; border: 1px solid var(--border);
+  background: var(--surface2); color: var(--text);
+  font-family: 'Share Tech Mono', monospace; font-size: 11px;
+  cursor: pointer; letter-spacing: 1px; transition: all 0.15s; white-space: nowrap;
+}
+.btn:hover  { border-color: var(--accent); color: var(--accent); }
+.btn:active { background: var(--accent-dim); }
+
+.btn-primary {
+  border-color: var(--accent); color: var(--accent); background: var(--accent-dim);
+  font-family: 'VT323', monospace; font-size: 17px; letter-spacing: 2px;
+  padding: 7px; width: 100%;
+}
+.btn-primary:hover  { background: var(--accent); color: var(--bg); }
+.btn-primary.running { border-color: var(--bad); color: var(--bad); background: var(--bad-dim); }
+.btn-primary.running:hover { background: var(--bad); color: var(--bg); }
+
+.btn-log   { width: 100%; font-size: 10px; color: var(--text-dim); border-color: var(--border2); }
+.btn-log.active { border-color: var(--good); color: var(--good); }
+
+.btn-recal { width: 100%; font-size: 10px; color: var(--warn); border-color: var(--warn); background: var(--warn-dim); }
+.btn-recal:hover { background: var(--warn); color: var(--bg); }
+
+.ann-row { display: flex; gap: 4px; width: 100%; }
+.ann-input { flex: 1; min-width: 0; background: var(--panel); border: 1px solid var(--border2);
+  color: var(--text); font-family: inherit; font-size: 10px; padding: 3px 6px;
+  border-radius: 3px; outline: none; }
+.ann-input:focus { border-color: var(--accent); }
+.ann-input::placeholder { color: var(--text-dim); opacity: 0.6; }
+.btn-ann { flex-shrink: 0; font-size: 10px; color: var(--accent); border-color: var(--accent); padding: 3px 8px; }
+.btn-ann:hover { background: var(--accent); color: var(--bg); }
+
+.osc-row { display: flex; gap: 5px; }
+.osc-row input:first-child { flex: 2; }
+.osc-row input:last-child  { flex: 1; }
+
+/* Signal quality */
+.signal-widget { display: flex; flex-direction: column; align-items: center; padding: 12px 10px; gap: 3px; }
+.signal-value { font-family: 'VT323', monospace; font-size: 46px; line-height: 1; color: var(--bad); transition: color 0.4s, text-shadow 0.4s; text-shadow: 0 0 8px rgba(255,34,0,0.5); }
+.signal-value.good { color: var(--good); text-shadow: 0 0 14px var(--good), 0 0 28px rgba(255,208,0,0.4); }
+.signal-value.warn { color: var(--warn); }
+.signal-label { font-family: 'VT323', monospace; font-size: 13px; letter-spacing: 3px; color: var(--text-dim); }
+.signal-bar-wrap { width: 100%; height: 3px; background: var(--surface2); margin-top: 5px; }
+.signal-bar { height: 100%; background: var(--bad); transition: width 0.5s, background 0.4s; }
+.warmup-badge { font-size: 9px; padding: 2px 6px; border: 1px solid var(--warn); color: var(--warn); text-align: center; animation: blink 1s infinite; }
+.warmup-badge.done { border-color: var(--good); color: var(--good); animation: none; }
+@keyframes blink { 50% { opacity: 0.3; } }
+
+/* ── CENTER COLUMN ───────────────────────────────────────────── */
+.center { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+
+/* eSense + Radar row — side by side */
+.center-top {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+/* eSense arcs */
+.arc-row { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.arc-wrap { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.arc-svg  { width: 100px; height: 58px; overflow: visible; }
+.arc-track { fill: none; stroke: var(--surface2); stroke-width: 7; stroke-linecap: round; }
+.arc-fill  { fill: none; stroke-width: 7; stroke-linecap: round; transition: stroke-dashoffset 0.15s linear; }
+.arc-val   { font-family: 'VT323', monospace; font-size: 28px; color: var(--text-bright); line-height: 1; text-shadow: 0 0 8px rgba(255,204,68,0.5); }
+.arc-name  { font-size: 9px; letter-spacing: 2px; color: var(--text-dim); }
+
+.blink-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px; background: var(--surface2);
+  border: 1px solid var(--border2); margin-top: 4px;
+}
+.blink-label { font-size: 9px; letter-spacing: 2px; color: var(--text-dim); }
+.blink-bar-wrap { flex: 1; height: 5px; background: var(--bg); }
+.blink-bar { height: 100%; background: var(--accent); width: 0%; transition: width 0.15s linear; box-shadow: 0 0 6px var(--accent); }
+.blink-val { font-family: 'VT323', monospace; font-size: 16px; color: var(--accent); width: 34px; text-align: right; }
+
+/* Radar */
+.radar-wrap { display: flex; justify-content: center; align-items: center; padding: 4px 0; }
+.radar-canvas { display: block; }
+
+/* Band bars */
+.bands-grid { display: flex; flex-direction: column; gap: 4px; }
+.band-row {
+  display: grid;
+  grid-template-columns: 72px 1fr 42px 54px;
+  align-items: center; gap: 5px;
+}
+.band-name { font-size: 9px; letter-spacing: 1px; color: var(--text-dim); text-align: right; }
+.band-bar-wrap { height: 12px; background: var(--surface2); position: relative; overflow: hidden; }
+.band-bar { height: 100%; width: 0%; transition: width 0.15s linear; position: relative; }
+.band-bar::after { content: ''; position: absolute; right: 0; top: 0; bottom: 0; width: 2px; background: rgba(255,255,255,0.4); }
+.band-val { font-family: 'VT323', monospace; font-size: 14px; text-align: right; }
+.band-raw { font-size: 8px; color: var(--text-dim); text-align: right; white-space: nowrap; }
+
+/* Derived */
+.derived-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+.derived-item { background: var(--surface2); border: 1px solid var(--border2); padding: 6px 8px; display: flex; flex-direction: column; gap: 3px; }
+.derived-name  { font-size: 8px; letter-spacing: 1px; color: var(--text-dim); }
+.derived-value { font-family: 'VT323', monospace; font-size: 20px; color: var(--accent); line-height: 1; text-shadow: 0 0 6px rgba(255,170,0,0.45); }
+.derived-bar-wrap { height: 2px; background: var(--bg); }
+.derived-bar { height: 100%; background: var(--accent); transition: width 0.15s linear; }
+
+/* ── RIGHT COLUMN ────────────────────────────────────────────── */
+.right { display: flex; flex-direction: column; gap: 6px; min-height: 0; overflow-y: auto; }
+
+/* OSC Monitor */
+.osc-monitor { display: flex; flex-direction: column; }
+.osc-group { margin-bottom: 6px; }
+.osc-group-label { font-size: 8px; letter-spacing: 2px; color: var(--text-dim); margin-bottom: 3px; padding-bottom: 2px; border-bottom: 1px solid var(--border2); }
+.osc-row-item { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 5px; padding: 1px 0; transition: opacity 0.4s; }
+.osc-row-item.gated { opacity: 0.2; }
+.osc-addr { font-size: 8px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.osc-bar-wrap { width: 36px; height: 3px; background: var(--surface2); }
+.osc-bar { height: 100%; width: 0%; transition: width 0.3s; }
+.osc-val { font-family: 'VT323', monospace; font-size: 13px; width: 32px; text-align: right; }
+.osc-system .osc-bar { background: var(--accent); }
+.osc-system .osc-val { color: var(--accent); }
+.osc-raw    .osc-bar { background: var(--good); }
+.osc-raw    .osc-val { color: var(--good); }
+.osc-band   .osc-val { color: var(--text-bright); }
+.osc-derived .osc-bar { background: var(--warn); }
+.osc-derived .osc-val { color: var(--warn); }
+
+/* Session stats */
+.stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+.stat-item { background: var(--surface2); border: 1px solid var(--border2); padding: 5px 7px; }
+.stat-label { font-size: 8px; letter-spacing: 1px; color: var(--text-dim); margin-bottom: 1px; }
+.stat-val { font-family: 'VT323', monospace; font-size: 18px; color: var(--text-bright); line-height: 1; }
+
+/* History sparklines in right column */
+.spark-row { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+.spark-wrap { display: flex; flex-direction: column; gap: 2px; }
+.spark-label { font-size: 8px; letter-spacing: 1px; color: var(--text-dim); }
+.spark-canvas { width: 100%; display: block; }
+.spark-full { margin-top: 2px; }
+
+/* ── Console ─────────────────────────────────────────────────── */
+footer { border-top: 1px solid var(--border); }
+.console-header { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; font-family: 'VT323', monospace; font-size: 13px; color: var(--text-dim); letter-spacing: 2px; }
+.console-clear { font-family: 'Share Tech Mono', monospace; font-size: 10px; background: none; border: none; color: var(--text-dim); cursor: pointer; }
+.console-clear:hover { color: var(--accent); }
+.console { height: 72px; overflow-y: auto; background: var(--surface); border: 1px solid var(--border2); padding: 6px 8px; display: flex; flex-direction: column-reverse; gap: 1px; }
+.log-line { font-size: 10px; line-height: 1.35; display: flex; gap: 7px; }
+.log-ts  { color: var(--text-dim); flex-shrink: 0; }
+.log-msg { color: var(--text); }
+.log-line.warn  .log-msg { color: var(--warn); }
+.log-line.error .log-msg { color: var(--bad); }
+.log-line.info  .log-msg { color: var(--text-bright); }
+
+::-webkit-scrollbar { width: 3px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border); }
+
+.disabled { opacity: 0.4; pointer-events: none; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Header -->
+  <header>
+    <div class="title">EEG<span>/</span>BRIDGE</div>
+    <div class="ws-status">
+      <div class="ws-dot" id="wsDot"></div>
+      <span id="wsLabel">DISCONNECTED</span>
+    </div>
+  </header>
+
+  <!-- Main -->
+  <div class="main">
+
+    <!-- ═══ LEFT ═══ -->
+    <div class="left">
+      <div class="panel">
+        <div class="panel-label">SERIAL</div>
+        <div class="controls">
+          <div>
+            <label>COM PORT</label>
+            <div class="port-row">
+              <select id="portSelect"><option value="">— select port —</option></select>
+              <button class="btn" id="refreshBtn">↻</button>
+            </div>
+          </div>
+          <div>
+            <label>BAUD RATE</label>
+            <select id="baudSelect">
+              <option value="9600" selected>9600 — standard</option>
+              <option value="57600">57600 — raw EEG</option>
+            </select>
+          </div>
+          <button class="btn btn-primary" id="startBtn">START</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-label">OSC → RESONITE</div>
+        <div class="controls">
+          <div>
+            <label>IP : PORT</label>
+            <div class="osc-row">
+              <input id="oscIp"   type="text"   value="127.0.0.1" placeholder="IP">
+              <input id="oscPort" type="number"  value="9001"      placeholder="Port">
+            </div>
+          </div>
+          <button class="btn" id="oscUpdateBtn">UPDATE OSC</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-label">SESSION</div>
+        <div class="controls">
+          <button class="btn btn-log"   id="logBtn">⬤  LOGGING OFF</button>
+          <button class="btn btn-recal" id="recalBtn">↺  RECALIBRATE</button>
+          <div class="ann-row">
+            <input type="text" id="annInput" class="ann-input" placeholder="annotation…" maxlength="120">
+            <button class="btn btn-ann" id="annBtn">TAG</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel signal-widget">
+        <div class="panel-label" style="align-self:flex-start">SIGNAL</div>
+        <div class="signal-value" id="signalVal">---</div>
+        <div class="signal-label" id="signalLabel">NO SIGNAL</div>
+        <div class="signal-bar-wrap"><div class="signal-bar" id="signalBar" style="width:0%"></div></div>
+        <div class="warmup-badge" id="warmupBadge" style="margin-top:6px;width:100%">CALIBRATING …</div>
+      </div>
+    </div>
+
+    <!-- ═══ CENTER ═══ -->
+    <div class="center">
+
+      <!-- eSense + Radar side by side -->
+      <div class="center-top">
+        <div class="panel">
+          <div class="panel-label">ESENSE</div>
+          <div class="arc-row">
+            <div class="arc-wrap">
+              <svg class="arc-svg" viewBox="0 0 100 58">
+                <path class="arc-track" d="M 8 54 A 42 42 0 0 1 92 54"/>
+                <path class="arc-fill" id="attArc" stroke="#ffaa00"
+                      d="M 8 54 A 42 42 0 0 1 92 54"
+                      stroke-dasharray="132" stroke-dashoffset="132"/>
+              </svg>
+              <div class="arc-val" id="attVal">00</div>
+              <div class="arc-name">ATTENTION</div>
+            </div>
+            <div class="arc-wrap">
+              <svg class="arc-svg" viewBox="0 0 100 58">
+                <path class="arc-track" d="M 8 54 A 42 42 0 0 1 92 54"/>
+                <path class="arc-fill" id="medArc" stroke="#ffd000"
+                      d="M 8 54 A 42 42 0 0 1 92 54"
+                      stroke-dasharray="132" stroke-dashoffset="132"/>
+              </svg>
+              <div class="arc-val" id="medVal">00</div>
+              <div class="arc-name">MEDITATION</div>
+            </div>
+          </div>
+          <div class="blink-row">
+            <span class="blink-label">BLINK</span>
+            <div class="blink-bar-wrap"><div class="blink-bar" id="blinkBar"></div></div>
+            <span class="blink-val" id="blinkVal">0</span>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-label">BRAIN STATE</div>
+          <div class="radar-wrap">
+            <canvas class="radar-canvas" id="radarCanvas" width="196" height="196"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- EEG Bands -->
+      <div class="panel">
+        <div class="panel-label">EEG BANDS</div>
+        <div class="bands-grid" id="bandsGrid"></div>
+      </div>
+
+      <!-- Derived -->
+      <div class="panel">
+        <div class="panel-label">DERIVED</div>
+        <div class="derived-grid" id="derivedGrid"></div>
+      </div>
+
+    </div><!-- /center -->
+
+    <!-- ═══ RIGHT ═══ -->
+    <div class="right">
+
+      <!-- OSC Monitor -->
+      <div class="panel">
+        <div class="panel-label">OSC MONITOR</div>
+        <div class="osc-monitor" id="oscMonitor">
+          <div class="osc-group">
+            <div class="osc-group-label">SYSTEM</div>
+            <div class="osc-row-item osc-system" id="osc-signal_ok">
+              <span class="osc-addr">/eeg/system/signal_ok</span>
+              <div class="osc-bar-wrap"><div class="osc-bar" id="oscbar-signal_ok"></div></div>
+              <span class="osc-val" id="oscval-signal_ok">—</span>
+            </div>
+            <div class="osc-row-item osc-system" id="osc-warmup_done">
+              <span class="osc-addr">/eeg/system/warmup_done</span>
+              <div class="osc-bar-wrap"><div class="osc-bar" id="oscbar-warmup_done"></div></div>
+              <span class="osc-val" id="oscval-warmup_done">—</span>
+            </div>
+          </div>
+          <div class="osc-group">
+            <div class="osc-group-label">RAW ESENSE</div>
+            <div class="osc-row-item osc-raw" id="osc-att">
+              <span class="osc-addr">/eeg/raw/attention</span>
+              <div class="osc-bar-wrap"><div class="osc-bar" id="oscbar-att"></div></div>
+              <span class="osc-val" id="oscval-att">—</span>
+            </div>
+            <div class="osc-row-item osc-raw" id="osc-med">
+              <span class="osc-addr">/eeg/raw/meditation</span>
+              <div class="osc-bar-wrap"><div class="osc-bar" id="oscbar-med"></div></div>
+              <span class="osc-val" id="oscval-med">—</span>
+            </div>
+            <div class="osc-row-item osc-raw" id="osc-blink">
+              <span class="osc-addr">/eeg/raw/blink</span>
+              <div class="osc-bar-wrap"><div class="osc-bar" id="oscbar-blink"></div></div>
+              <span class="osc-val" id="oscval-blink">—</span>
+            </div>
+          </div>
+          <div class="osc-group" id="oscBandsGroup">
+            <div class="osc-group-label">BANDS</div>
+          </div>
+          <div class="osc-group" id="oscDerivedGroup">
+            <div class="osc-group-label">DERIVED</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Session stats -->
+      <div class="panel">
+        <div class="panel-label">SESSION STATS</div>
+        <div class="stats-grid">
+          <div class="stat-item"><div class="stat-label">PACKETS</div><div class="stat-val" id="statPackets">0</div></div>
+          <div class="stat-item"><div class="stat-label">SIGNAL OK</div><div class="stat-val" id="statSigOk">—</div></div>
+          <div class="stat-item"><div class="stat-label">ATT PEAK</div><div class="stat-val" id="statAttPeak">—</div></div>
+          <div class="stat-item"><div class="stat-label">MED PEAK</div><div class="stat-val" id="statMedPeak">—</div></div>
+          <div class="stat-item"><div class="stat-label">DOM BAND</div><div class="stat-val" id="statDomBand" style="font-size:12px;padding-top:3px">—</div></div>
+          <div class="stat-item"><div class="stat-label">ENERGY AVG</div><div class="stat-val" id="statEnergyAvg">—</div></div>
+        </div>
+      </div>
+
+      <!-- History sparklines -->
+      <div class="panel">
+        <div class="panel-label">HISTORY</div>
+        <div class="spark-row">
+          <div class="spark-wrap">
+            <span class="spark-label">ATTENTION</span>
+            <canvas class="spark-canvas" id="attSpark" height="32"></canvas>
+          </div>
+          <div class="spark-wrap">
+            <span class="spark-label">MEDITATION</span>
+            <canvas class="spark-canvas" id="medSpark" height="32"></canvas>
+          </div>
+        </div>
+        <div class="spark-wrap spark-full">
+          <span class="spark-label">BAND ENERGY</span>
+          <canvas class="spark-canvas" id="energySpark" height="32"></canvas>
+        </div>
+      </div>
+
+    </div><!-- /right -->
+  </div><!-- /main -->
+
+  <!-- Console -->
+  <footer>
+    <div class="console-header">
+      <span>CONSOLE</span>
+      <button class="console-clear" id="clearLog">CLEAR</button>
+    </div>
+    <div class="console" id="console"></div>
+  </footer>
+
+</div>
+
+<script>
+// ── Constants ────────────────────────────────────────────────────
+const WS_URL = 'ws://localhost:8765';
+// Arc path length for the smaller viewBox (42px radius semicircle ≈ 132)
+const ARC_LEN = 132;
+
+const BAND_DEFS = [
+  { key: 'delta',      label: 'DELTA',  color: 'var(--c-delta)'  },
+  { key: 'theta',      label: 'THETA',  color: 'var(--c-theta)'  },
+  { key: 'low_alpha',  label: 'LOW α',  color: 'var(--c-lalpha)' },
+  { key: 'high_alpha', label: 'HIGH α', color: 'var(--c-halpha)' },
+  { key: 'low_beta',   label: 'LOW β',  color: 'var(--c-lbeta)'  },
+  { key: 'high_beta',  label: 'HIGH β', color: 'var(--c-hbeta)'  },
+  { key: 'low_gamma',  label: 'LOW γ',  color: 'var(--c-lgamma)' },
+  { key: 'high_gamma', label: 'HIGH γ', color: 'var(--c-hgamma)' },
+];
+const BAND_COLORS_HEX = ['#6b3d00','#9a5800','#c87a00','#e89600','#f5a800','#ff8800','#ff5800','#ff3300'];
+
+const DERIVED_DEFS = [
+  { key: 'alpha_beta_ratio',  label: 'α/β RATIO'  },
+  { key: 'engagement_index',  label: 'ENGAGEMENT' },
+  { key: 'theta_alpha_ratio', label: 'θ/α RATIO'  },
+  { key: 'band_energy',       label: 'ENERGY'     },
+  { key: 'band_dominance',    label: 'DOMINANCE'  },
+];
+
+const SPARK_LEN = 60;
+
+// ── State ────────────────────────────────────────────────────────
+let ws = null, running = false, logging = false, wsReady = false;
+let prevData = null, targetData = null, lastPacketTime = 0;
+const INTERP_MS = 950;
+
+const history = {
+  att:    new Array(SPARK_LEN).fill(0),
+  med:    new Array(SPARK_LEN).fill(0),
+  energy: new Array(SPARK_LEN).fill(0),
+};
+
+let statPackets = 0, statGoodPkts = 0, statAttPeak = 0, statMedPeak = 0;
+let statEnergySum = 0, statDomCounts = {};
+
+// ── Build band rows ──────────────────────────────────────────────
+const bandsGrid = document.getElementById('bandsGrid');
+BAND_DEFS.forEach(b => {
+  bandsGrid.innerHTML += `
+    <div class="band-row">
+      <span class="band-name">${b.label}</span>
+      <div class="band-bar-wrap">
+        <div class="band-bar" id="bar-${b.key}" style="background:${b.color}"></div>
+      </div>
+      <span class="band-val" id="val-${b.key}" style="color:${b.color}">0.00</span>
+      <span class="band-raw" id="raw-${b.key}">—</span>
+    </div>`;
+});
+
+// ── Build derived grid ───────────────────────────────────────────
+const derivedGrid = document.getElementById('derivedGrid');
+DERIVED_DEFS.forEach(d => {
+  derivedGrid.innerHTML += `
+    <div class="derived-item">
+      <span class="derived-name">${d.label}</span>
+      <span class="derived-value" id="dval-${d.key}">0.00</span>
+      <div class="derived-bar-wrap"><div class="derived-bar" id="dbar-${d.key}" style="width:0%"></div></div>
+    </div>`;
+});
+
+// ── Build OSC monitor rows ───────────────────────────────────────
+const oscBandsGroup   = document.getElementById('oscBandsGroup');
+const oscDerivedGroup = document.getElementById('oscDerivedGroup');
+BAND_DEFS.forEach((b, i) => {
+  const hex = BAND_COLORS_HEX[i];
+  oscBandsGroup.innerHTML += `
+    <div class="osc-row-item osc-band" id="osc-band-${b.key}">
+      <span class="osc-addr">/eeg/band/${b.key}</span>
+      <div class="osc-bar-wrap"><div class="osc-bar" id="oscbar-band-${b.key}" style="background:${hex}"></div></div>
+      <span class="osc-val" id="oscval-band-${b.key}" style="color:${hex}">—</span>
+    </div>`;
+});
+DERIVED_DEFS.forEach(d => {
+  oscDerivedGroup.innerHTML += `
+    <div class="osc-row-item osc-derived" id="osc-der-${d.key}">
+      <span class="osc-addr">/eeg/derived/${d.key}</span>
+      <div class="osc-bar-wrap"><div class="osc-bar" id="oscbar-der-${d.key}"></div></div>
+      <span class="osc-val" id="oscval-der-${d.key}">—</span>
+    </div>`;
+});
+
+// ── WebSocket ────────────────────────────────────────────────────
+function connect() {
+  ws = new WebSocket(WS_URL);
+  ws.onopen = () => { wsReady = true; setWsStatus(true); log('WebSocket connected.', 'info'); ws.send(JSON.stringify({ type: 'get_ports' })); };
+  ws.onclose = () => { wsReady = false; setWsStatus(false); log('WebSocket disconnected. Reconnecting in 3s …', 'warn'); setTimeout(connect, 3000); };
+  ws.onerror = () => { log('WebSocket error — is main.py running?', 'error'); };
+  ws.onmessage = ({ data }) => { try { handleMessage(JSON.parse(data)); } catch(e) { console.error(e); } };
+}
+function send(obj) { if (ws && wsReady) ws.send(JSON.stringify(obj)); }
+
+// ── Message handler ──────────────────────────────────────────────
+function handleMessage(msg) {
+  switch (msg.type) {
+    case 'ports':  populatePorts(msg.ports || []); break;
+    case 'status': running = msg.running; logging = msg.logging; updateRunBtn(); updateLogBtn(); break;
+    case 'config':
+      if (msg.osc_ip)   document.getElementById('oscIp').value      = msg.osc_ip;
+      if (msg.osc_port) document.getElementById('oscPort').value    = msg.osc_port;
+      if (msg.baud)     document.getElementById('baudSelect').value = String(msg.baud);
+      break;
+    case 'data': ingestData(msg.data); break;
+    case 'log':  log(msg.message, msg.level || 'info'); break;
+  }
+}
+
+// ── Port list ────────────────────────────────────────────────────
+function populatePorts(ports) {
+  const sel = document.getElementById('portSelect');
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">— select port —</option>';
+  ports.forEach(p => {
+    const opt = document.createElement('option');
+    opt.value = p.device;
+    opt.textContent = `${p.device}  ${p.description}${p.arduino ? ' ◆ ARDUINO' : ''}`;
+    if (p.arduino) opt.style.color = 'var(--good)';
+    sel.appendChild(opt);
+  });
+  if (cur) sel.value = cur;
+  if (!sel.value) { const a = ports.find(p => p.arduino); if (a) sel.value = a.device; }
+}
+
+// ── Data ingestion (1 Hz) ────────────────────────────────────────
+function ingestData(d) {
+  prevData = targetData || d;
+  targetData = d;
+  lastPacketTime = performance.now();
+
+  statPackets++;
+  if (d.signal_ok) statGoodPkts++;
+  const att = d.attention ?? 0, med = d.meditation ?? 0, ene = d.derived?.band_energy ?? 0;
+  if (att * 100 > statAttPeak) statAttPeak = Math.round(att * 100);
+  if (med * 100 > statMedPeak) statMedPeak = Math.round(med * 100);
+  statEnergySum += ene;
+  const dom = d.derived?.dominant_band || '';
+  if (dom) statDomCounts[dom] = (statDomCounts[dom] || 0) + 1;
+
+  history.att.push(att);    history.att.shift();
+  history.med.push(med);    history.med.shift();
+  history.energy.push(ene); history.energy.shift();
+
+  updateSignal(d);
+  updateStats(d);
+  updateOscMonitor(d);
+}
+
+// ── rAF render loop ──────────────────────────────────────────────
+function renderLoop() {
+  if (targetData) {
+    const t = Math.min((performance.now() - lastPacketTime) / INTERP_MS, 1.0);
+    renderData(interpolate(prevData || targetData, targetData, t));
+  }
+  requestAnimationFrame(renderLoop);
+}
+
+function lerp(a, b, t) { return a + (b - a) * t; }
+
+function interpolate(a, b, t) {
+  if (!a || !b) return b;
+  const bands = {}, derived = {};
+  BAND_DEFS.forEach(bd => { bands[bd.key] = lerp(a.bands?.[bd.key] ?? 0, b.bands?.[bd.key] ?? 0, t); });
+  DERIVED_DEFS.forEach(dd => {
+    if (typeof b.derived?.[dd.key] === 'number')
+      derived[dd.key] = lerp(a.derived?.[dd.key] ?? 0, b.derived?.[dd.key] ?? 0, t);
+  });
+  derived.dominant_band = b.derived?.dominant_band;
+  return { ...b, attention: lerp(a.attention??0,b.attention??0,t), meditation: lerp(a.meditation??0,b.meditation??0,t), blink: lerp(a.blink??0,b.blink??0,t), bands, bands_raw: b.bands_raw, derived };
+}
+
+// ── Render display data ──────────────────────────────────────────
+function renderData(d) {
+  const att = d.attention ?? 0, med = d.meditation ?? 0;
+  setArc('attArc', att); setArc('medArc', med);
+  document.getElementById('attVal').textContent = Math.round(att * 100).toString().padStart(2, '0');
+  document.getElementById('medVal').textContent = Math.round(med * 100).toString().padStart(2, '0');
+
+  const blinkPct = (d.blink ?? 0) * 100;
+  document.getElementById('blinkBar').style.width = blinkPct.toFixed(1) + '%';
+  document.getElementById('blinkVal').textContent = Math.round(blinkPct);
+
+  const bands = d.bands || {}, bandsRaw = d.bands_raw || {}, dom = d.derived?.dominant_band;
+  BAND_DEFS.forEach(b => {
+    const v = bands[b.key] ?? 0, raw = bandsRaw[b.key] ?? 0;
+    document.getElementById('bar-' + b.key).style.width   = (v * 100).toFixed(1) + '%';
+    document.getElementById('val-' + b.key).textContent   = v.toFixed(2);
+    document.getElementById('raw-' + b.key).textContent   = raw >= 1000 ? (raw/1000).toFixed(0)+'K' : String(raw);
+    document.getElementById('bar-' + b.key).style.opacity = b.key === dom ? '1' : '0.5';
+  });
+
+  const derived = d.derived || {};
+  DERIVED_DEFS.forEach(dd => {
+    const v = typeof derived[dd.key] === 'number' ? derived[dd.key] : 0;
+    document.getElementById('dval-' + dd.key).textContent = v.toFixed(2);
+    document.getElementById('dbar-' + dd.key).style.width = (Math.min(v,1)*100).toFixed(1) + '%';
+  });
+
+  drawRadar(bands);
+  drawSparkline('attSpark',    history.att,    '#ffaa00');
+  drawSparkline('medSpark',    history.med,    '#ffd000');
+  drawSparkline('energySpark', history.energy, '#ff6600');
+}
+
+// ── Signal (non-interpolated) ────────────────────────────────────
+function updateSignal(d) {
+  const sq = d.signal_quality ?? 200, pct = Math.round((1 - sq/200)*100);
+  const el = document.getElementById('signalVal');
+  el.textContent = sq === 200 ? '---' : String(sq).padStart(3, '0');
+  el.className   = 'signal-value ' + (sq === 0 ? 'good' : sq < 50 ? 'warn' : '');
+  document.getElementById('signalLabel').textContent = sq===0?'PERFECT':sq<50?'ACCEPTABLE':sq<100?'WEAK':'NO SIGNAL';
+  document.getElementById('signalBar').style.width      = pct + '%';
+  document.getElementById('signalBar').style.background = sq===0?'var(--good)':sq<50?'var(--warn)':'var(--bad)';
+  const wb = document.getElementById('warmupBadge');
+  wb.textContent = d.warmup_done ? 'CALIBRATED' : 'CALIBRATING …';
+  wb.className   = 'warmup-badge' + (d.warmup_done ? ' done' : '');
+}
+
+// ── OSC Monitor ──────────────────────────────────────────────────
+function updateOscMonitor(d) {
+  const gated = !d.signal_ok;
+  const set = (barId, valId, v, max=1) => {
+    const b = document.getElementById(barId), vl = document.getElementById(valId);
+    if (b) b.style.width = (Math.min(v, max)/max*100).toFixed(1)+'%';
+    if (vl) vl.textContent = typeof v==='number' ? v.toFixed(2) : v;
+  };
+
+  document.getElementById('oscbar-signal_ok').style.width  = (d.signal_ok?100:0)+'%';
+  document.getElementById('oscval-signal_ok').textContent  = d.signal_ok?'1.00':'0.00';
+  document.getElementById('oscbar-warmup_done').style.width = (d.warmup_done?100:0)+'%';
+  document.getElementById('oscval-warmup_done').textContent = d.warmup_done?'1.00':'0.00';
+
+  ['att','med','blink'].forEach(k => {
+    document.getElementById('osc-'+k)?.classList.toggle('gated', gated);
+  });
+  set('oscbar-att',  'oscval-att',  d.attention ?? 0);
+  set('oscbar-med',  'oscval-med',  d.meditation ?? 0);
+  set('oscbar-blink','oscval-blink',d.blink ?? 0);
+
+  BAND_DEFS.forEach(b => {
+    const v = d.bands?.[b.key] ?? 0;
+    document.getElementById('osc-band-'+b.key)?.classList.toggle('gated', gated);
+    set('oscbar-band-'+b.key, 'oscval-band-'+b.key, v);
+  });
+  DERIVED_DEFS.forEach(dd => {
+    const v = d.derived?.[dd.key] ?? 0;
+    document.getElementById('osc-der-'+dd.key)?.classList.toggle('gated', gated);
+    set('oscbar-der-'+dd.key, 'oscval-der-'+dd.key, typeof v==='number'?v:0);
+  });
+}
+
+// ── Session stats ────────────────────────────────────────────────
+function updateStats() {
+  document.getElementById('statPackets').textContent   = statPackets;
+  document.getElementById('statSigOk').textContent     = statPackets ? Math.round(statGoodPkts/statPackets*100)+'%' : '—';
+  document.getElementById('statAttPeak').textContent   = statAttPeak || '—';
+  document.getElementById('statMedPeak').textContent   = statMedPeak || '—';
+  document.getElementById('statEnergyAvg').textContent = statPackets ? (statEnergySum/statPackets).toFixed(2) : '—';
+  let domBand='—', domMax=0;
+  for (const [b,c] of Object.entries(statDomCounts)) { if (c>domMax) { domMax=c; domBand=b; } }
+  document.getElementById('statDomBand').textContent = domBand==='—'?'—':domBand.replace('_',' ').toUpperCase();
+}
+
+// ── Radar chart ──────────────────────────────────────────────────
+function drawRadar(bands) {
+  const canvas = document.getElementById('radarCanvas');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const cx = W/2, cy = H/2, R = Math.min(W,H)*0.36, N = BAND_DEFS.length;
+  ctx.clearRect(0,0,W,H);
+
+  // Web rings
+  for (let ring=1; ring<=4; ring++) {
+    const r = R*ring/4;
+    ctx.beginPath();
+    for (let i=0;i<N;i++) {
+      const a = (i/N)*Math.PI*2 - Math.PI/2;
+      i===0 ? ctx.moveTo(cx+r*Math.cos(a), cy+r*Math.sin(a)) : ctx.lineTo(cx+r*Math.cos(a), cy+r*Math.sin(a));
+    }
+    ctx.closePath();
+    ctx.strokeStyle = ring===4 ? 'rgba(46,30,0,0.9)' : 'rgba(46,30,0,0.5)';
+    ctx.lineWidth = ring===4 ? 1 : 0.5;
+    ctx.stroke();
+  }
+
+  // Axes + labels
+  BAND_DEFS.forEach((b,i) => {
+    const a = (i/N)*Math.PI*2 - Math.PI/2;
+    ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(cx+R*Math.cos(a), cy+R*Math.sin(a));
+    ctx.strokeStyle = 'rgba(46,30,0,0.8)'; ctx.lineWidth = 0.5; ctx.stroke();
+    const lx = cx+(R+14)*Math.cos(a), ly = cy+(R+14)*Math.sin(a);
+    ctx.fillStyle = BAND_COLORS_HEX[i];
+    ctx.font = '9px "Share Tech Mono",monospace';
+    ctx.textAlign = Math.abs(Math.cos(a))<0.1?'center':Math.cos(a)>0?'left':'right';
+    ctx.textBaseline = Math.sin(a)>0.3?'top':Math.sin(a)<-0.3?'bottom':'middle';
+    ctx.fillText(b.label, lx, ly);
+  });
+
+  // Data polygon
+  ctx.beginPath();
+  BAND_DEFS.forEach((b,i) => {
+    const v = Math.max(0,Math.min(1,bands[b.key]??0));
+    const a = (i/N)*Math.PI*2 - Math.PI/2;
+    i===0 ? ctx.moveTo(cx+R*v*Math.cos(a), cy+R*v*Math.sin(a)) : ctx.lineTo(cx+R*v*Math.cos(a), cy+R*v*Math.sin(a));
+  });
+  ctx.closePath();
+  const grad = ctx.createRadialGradient(cx,cy,0,cx,cy,R);
+  grad.addColorStop(0,   'rgba(255,170,0,0.30)');
+  grad.addColorStop(0.5, 'rgba(255,170,0,0.10)');
+  grad.addColorStop(1,   'rgba(255,170,0,0.02)');
+  ctx.fillStyle = grad; ctx.fill();
+  ctx.strokeStyle = 'rgba(255,170,0,0.75)'; ctx.lineWidth = 1.5; ctx.stroke();
+
+  // Vertex dots
+  BAND_DEFS.forEach((b,i) => {
+    const v = Math.max(0,Math.min(1,bands[b.key]??0));
+    const a = (i/N)*Math.PI*2 - Math.PI/2;
+    ctx.beginPath(); ctx.arc(cx+R*v*Math.cos(a), cy+R*v*Math.sin(a), 2, 0, Math.PI*2);
+    ctx.fillStyle = BAND_COLORS_HEX[i]; ctx.fill();
+  });
+}
+
+// ── Sparkline ────────────────────────────────────────────────────
+function drawSparkline(id, data, color) {
+  const canvas = document.getElementById(id); if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.clientWidth||100, H = canvas.clientHeight||32;
+  canvas.width=W; canvas.height=H;
+  ctx.clearRect(0,0,W,H);
+  const max = Math.max(...data, 0.01), step = W/(data.length-1);
+  ctx.beginPath(); ctx.moveTo(0,H);
+  data.forEach((v,i) => ctx.lineTo(i*step, H-(v/max)*(H-2)));
+  ctx.lineTo(W,H); ctx.closePath();
+  const g = ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0, hexRgba(color,0.28)); g.addColorStop(1, hexRgba(color,0.02));
+  ctx.fillStyle=g; ctx.fill();
+  ctx.beginPath();
+  data.forEach((v,i) => { const x=i*step,y=H-(v/max)*(H-2); i===0?ctx.moveTo(x,y):ctx.lineTo(x,y); });
+  ctx.strokeStyle=color; ctx.lineWidth=1.2; ctx.stroke();
+}
+function hexRgba(hex, a) {
+  if (hex.startsWith('var')) return `rgba(255,170,0,${a})`;
+  const r=parseInt(hex.slice(1,3),16), g=parseInt(hex.slice(3,5),16), b=parseInt(hex.slice(5,7),16);
+  return `rgba(${r},${g},${b},${a})`;
+}
+
+// ── Arc ──────────────────────────────────────────────────────────
+function setArc(id, fraction) {
+  document.getElementById(id).style.strokeDashoffset = (ARC_LEN - fraction*ARC_LEN).toFixed(1);
+}
+
+// ── Controls ─────────────────────────────────────────────────────
+document.getElementById('startBtn').onclick = () => {
+  if (running) { send({type:'stop'}); }
+  else {
+    send({ type:'start', port: document.getElementById('portSelect').value,
+      baud: parseInt(document.getElementById('baudSelect').value),
+      osc_ip: document.getElementById('oscIp').value,
+      osc_port: parseInt(document.getElementById('oscPort').value) });
+  }
+};
+document.getElementById('refreshBtn').onclick  = () => send({type:'get_ports'});
+document.getElementById('oscUpdateBtn').onclick = () => send({type:'set_osc', ip:document.getElementById('oscIp').value, port:parseInt(document.getElementById('oscPort').value)});
+document.getElementById('logBtn').onclick   = () => send({type:'toggle_logging'});
+document.getElementById('recalBtn').onclick = () => send({type:'recalibrate'});
+document.getElementById('clearLog').onclick = () => { document.getElementById('console').innerHTML=''; };
+
+function sendAnnotation() {
+  const inp = document.getElementById('annInput');
+  const text = inp.value.trim();
+  if (!text) return;
+  send({type:'annotate', text});
+  inp.value = '';
+}
+document.getElementById('annBtn').onclick = sendAnnotation;
+document.getElementById('annInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') sendAnnotation();
+});
+
+function updateRunBtn() { const b=document.getElementById('startBtn'); b.textContent=running?'STOP':'START'; b.className='btn btn-primary'+(running?' running':''); }
+function updateLogBtn() { const b=document.getElementById('logBtn'); b.textContent=logging?'⬤  LOGGING ON':'⬤  LOGGING OFF'; b.className='btn btn-log'+(logging?' active':''); }
+function setWsStatus(c) { document.getElementById('wsDot').className='ws-dot'+(c?' connected':''); document.getElementById('wsLabel').textContent=c?'CONNECTED':'DISCONNECTED'; }
+
+// ── Console ───────────────────────────────────────────────────────
+function log(msg, level='info') {
+  const el=document.getElementById('console'), ts=new Date().toLocaleTimeString('en-US',{hour12:false});
+  const line=document.createElement('div'); line.className=`log-line ${level}`;
+  line.innerHTML=`<span class="log-ts">${ts}</span><span class="log-msg">${escHtml(msg)}</span>`;
+  el.insertBefore(line,el.firstChild);
+  while(el.children.length>200) el.removeChild(el.lastChild);
+}
+function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+connect();
+log('EEG Bridge UI loaded. Waiting for main.py …','info');
+requestAnimationFrame(renderLoop);
+</script>
+</body>
+</html>
