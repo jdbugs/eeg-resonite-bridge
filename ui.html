@@ -68,6 +68,7 @@ body::after {
   margin: 0 auto;
   padding: 8px;
   gap: 6px;
+  will-change: transform;
 }
 
 /* ── Header ─────────────────────────────────────────────────── */
@@ -273,6 +274,57 @@ footer { border-top: 1px solid var(--border); }
 ::-webkit-scrollbar-thumb { background: var(--border); }
 
 .disabled { opacity: 0.4; pointer-events: none; }
+
+/* ── OSC loopback test panel ─────────────────────────────────── */
+.osc-test-panel {
+  display: none;
+  background: var(--surface2); border: 1px solid var(--border2);
+  padding: 8px; margin-bottom: 6px;
+}
+.osc-test-panel.visible { display: block; }
+.osc-test-banner {
+  font-family: 'VT323', monospace; font-size: 15px; letter-spacing: 2px;
+  margin-bottom: 5px; padding-bottom: 4px; border-bottom: 1px solid var(--border2);
+}
+.osc-test-banner.pass { color: var(--good); text-shadow: 0 0 8px var(--good); }
+.osc-test-banner.fail { color: var(--bad);  text-shadow: 0 0 8px var(--bad); }
+.osc-test-rows { display: flex; flex-direction: column; gap: 1px; }
+.osc-test-row {
+  display: grid; grid-template-columns: 14px 1fr auto auto;
+  align-items: center; gap: 4px; font-size: 8px; padding: 1px 0;
+}
+.osc-test-tick  { font-family: 'VT323', monospace; font-size: 14px; color: var(--good); }
+.osc-test-cross { font-family: 'VT323', monospace; font-size: 14px; color: var(--bad); }
+.osc-test-addr { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.osc-test-sent { color: var(--text-dim); width: 32px; text-align: right; }
+.osc-test-got  { color: var(--text-bright); width: 32px; text-align: right; font-family: 'VT323', monospace; font-size: 12px; }
+.osc-test-dismiss {
+  font-family: 'Share Tech Mono', monospace; font-size: 9px; background: none;
+  border: 1px solid var(--border); color: var(--text-dim); cursor: pointer;
+  padding: 2px 6px; margin-top: 5px; float: right;
+}
+.osc-test-dismiss:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Flash animation for OSC monitor rows after test */
+@keyframes flash-pass {
+  0%   { background: transparent; }
+  30%  { background: rgba(255,208,0,0.12); outline: 1px solid var(--good); }
+  100% { background: transparent; }
+}
+@keyframes flash-fail {
+  0%   { background: transparent; }
+  30%  { background: rgba(255,34,0,0.12); outline: 1px solid var(--bad); }
+  100% { background: transparent; }
+}
+.flash-pass { animation: flash-pass 2.5s ease forwards; }
+.flash-fail { animation: flash-fail 2.5s ease forwards; }
+
+.btn-test {
+  font-size: 10px; color: var(--warn); border-color: var(--warn);
+  padding: 5px 8px; white-space: nowrap;
+}
+.btn-test:hover { background: var(--warn); color: var(--bg); }
+.btn-test.running { opacity: 0.5; pointer-events: none; }
 </style>
 </head>
 <body>
@@ -323,7 +375,10 @@ footer { border-top: 1px solid var(--border); }
               <input id="oscPort" type="number"  value="9001"      placeholder="Port">
             </div>
           </div>
-          <button class="btn" id="oscUpdateBtn">UPDATE OSC</button>
+          <div style="display:flex;gap:5px">
+            <button class="btn" style="flex:1" id="oscUpdateBtn">UPDATE OSC</button>
+            <button class="btn btn-test" id="oscTestBtn">TEST OSC</button>
+          </div>
         </div>
       </div>
 
@@ -413,6 +468,15 @@ footer { border-top: 1px solid var(--border); }
       <div class="panel">
         <div class="panel-label">OSC MONITOR</div>
         <div class="osc-monitor" id="oscMonitor">
+
+          <!-- Loopback test results — hidden until test runs -->
+          <div class="osc-test-panel" id="oscTestPanel">
+            <div class="osc-test-banner" id="oscTestBanner"></div>
+            <div class="osc-test-rows"   id="oscTestRows"></div>
+            <button class="osc-test-dismiss" onclick="dismissOscTest()">DISMISS</button>
+            <div style="clear:both"></div>
+          </div>
+
           <div class="osc-group">
             <div class="osc-group-label">SYSTEM</div>
             <div class="osc-row-item osc-system" id="osc-signal_ok">
@@ -607,8 +671,9 @@ function handleMessage(msg) {
       if (msg.osc_port) document.getElementById('oscPort').value    = msg.osc_port;
       if (msg.baud)     document.getElementById('baudSelect').value = String(msg.baud);
       break;
-    case 'data': ingestData(msg.data); break;
-    case 'log':  log(msg.message, msg.level || 'info'); break;
+    case 'data':            ingestData(msg.data); break;
+    case 'log':             log(msg.message, msg.level || 'info'); break;
+    case 'osc_test_result': handleOscTestResult(msg); break;
   }
 }
 
@@ -867,6 +932,15 @@ document.getElementById('startBtn').onclick = () => {
 };
 document.getElementById('refreshBtn').onclick  = () => send({type:'get_ports'});
 document.getElementById('oscUpdateBtn').onclick = () => send({type:'set_osc', ip:document.getElementById('oscIp').value, port:parseInt(document.getElementById('oscPort').value)});
+document.getElementById('oscTestBtn').onclick = () => {
+  const btn  = document.getElementById('oscTestBtn');
+  const port = parseInt(document.getElementById('oscPort').value) || 9001;
+  btn.classList.add('running');
+  btn.textContent = 'TESTING…';
+  send({ type: 'test_osc', port });
+  // Safety: re-enable button after 8s in case result never arrives
+  setTimeout(() => { btn.classList.remove('running'); btn.textContent = 'TEST OSC'; }, 8000);
+};
 document.getElementById('logBtn').onclick   = () => send({type:'toggle_logging'});
 document.getElementById('recalBtn').onclick = () => send({type:'recalibrate'});
 document.getElementById('clearLog').onclick = () => { document.getElementById('console').innerHTML=''; };
@@ -896,6 +970,122 @@ function log(msg, level='info') {
   while(el.children.length>200) el.removeChild(el.lastChild);
 }
 function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// ── OSC loopback test ────────────────────────────────────────────
+// Maps the OSC address schema to existing OSC monitor element IDs
+const TEST_ADDR_TO_ELEM = {
+  '/eeg/system/signal_ok':          'osc-signal_ok',
+  '/eeg/system/warmup_done':        'osc-warmup_done',
+  '/eeg/raw/attention':             'osc-att',
+  '/eeg/raw/meditation':            'osc-med',
+  '/eeg/raw/blink':                 'osc-blink',
+  '/eeg/band/delta':                'osc-band-delta',
+  '/eeg/band/theta':                'osc-band-theta',
+  '/eeg/band/low_alpha':            'osc-band-low_alpha',
+  '/eeg/band/high_alpha':           'osc-band-high_alpha',
+  '/eeg/band/low_beta':             'osc-band-low_beta',
+  '/eeg/band/high_beta':            'osc-band-high_beta',
+  '/eeg/band/low_gamma':            'osc-band-low_gamma',
+  '/eeg/band/high_gamma':           'osc-band-high_gamma',
+  '/eeg/derived/alpha_beta_ratio':  'osc-der-alpha_beta_ratio',
+  '/eeg/derived/engagement_index':  'osc-der-engagement_index',
+  '/eeg/derived/theta_alpha_ratio': 'osc-der-theta_alpha_ratio',
+  '/eeg/derived/band_energy':       'osc-der-band_energy',
+  '/eeg/derived/band_dominance':    'osc-der-band_dominance',
+};
+
+let oscTestDismissTimer = null;
+
+function handleOscTestResult(msg) {
+  const testBtn    = document.getElementById('oscTestBtn');
+  const panel      = document.getElementById('oscTestPanel');
+  const banner     = document.getElementById('oscTestBanner');
+  const rowsEl     = document.getElementById('oscTestRows');
+  testBtn.classList.remove('running');
+  testBtn.textContent = 'TEST OSC';
+
+  if (msg.error) {
+    banner.className  = 'osc-test-banner fail';
+    banner.textContent = `> OSC TEST FAIL — ${msg.error}`;
+    rowsEl.innerHTML  = '';
+    panel.classList.add('visible');
+    return;
+  }
+
+  const { results, all_passed } = msg;
+  const n_ok = results.filter(r => r.received).length;
+
+  banner.className  = 'osc-test-banner ' + (all_passed ? 'pass' : 'fail');
+  banner.textContent = all_passed
+    ? `> OSC TEST PASS — ${n_ok}/${results.length} RECEIVED`
+    : `> OSC TEST FAIL — ${n_ok}/${results.length} RECEIVED`;
+
+  rowsEl.innerHTML = '';
+  results.forEach(r => {
+    const shortAddr = r.addr.replace('/eeg/', '');
+    const tickEl    = r.received
+      ? `<span class="osc-test-tick">✓</span>`
+      : `<span class="osc-test-cross">✗</span>`;
+    const gotVal    = r.received ? r.value.toFixed(2) : '—';
+    rowsEl.innerHTML += `
+      <div class="osc-test-row">
+        ${tickEl}
+        <span class="osc-test-addr">${shortAddr}</span>
+        <span class="osc-test-sent">${r.sent.toFixed(2)}</span>
+        <span class="osc-test-got">${gotVal}</span>
+      </div>`;
+  });
+
+  panel.classList.add('visible');
+
+  // Flash individual OSC monitor rows
+  results.forEach(r => {
+    const elemId = TEST_ADDR_TO_ELEM[r.addr];
+    if (!elemId) return;
+    const el = document.getElementById(elemId);
+    if (!el) return;
+    el.classList.remove('flash-pass', 'flash-fail');
+    void el.offsetWidth; // force reflow to restart animation
+    el.classList.add(r.received ? 'flash-pass' : 'flash-fail');
+    setTimeout(() => el.classList.remove('flash-pass', 'flash-fail'), 2600);
+  });
+
+  // Auto-dismiss after 20 seconds
+  if (oscTestDismissTimer) clearTimeout(oscTestDismissTimer);
+  oscTestDismissTimer = setTimeout(dismissOscTest, 20000);
+}
+
+function dismissOscTest() {
+  document.getElementById('oscTestPanel').classList.remove('visible');
+  if (oscTestDismissTimer) { clearTimeout(oscTestDismissTimer); oscTestDismissTimer = null; }
+}
+
+// ── Responsive viewport scaling ───────────────────────────────────
+// Scale the entire UI down proportionally when the viewport is smaller
+// than the reference design size. On large screens, no scaling is applied
+// and max-width/centering works as normal.
+const DESIGN_W = 1280, DESIGN_H = 720;
+function scaleUI() {
+  const app = document.querySelector('.app');
+  const scale = Math.min(window.innerWidth / DESIGN_W, window.innerHeight / DESIGN_H, 1.0);
+  if (scale < 1.0) {
+    app.style.transform      = `scale(${scale.toFixed(4)})`;
+    app.style.transformOrigin = 'top left';
+    app.style.maxWidth        = 'none';
+    app.style.margin          = '0';
+    app.style.width           = DESIGN_W + 'px';
+    app.style.height          = (window.innerHeight / scale).toFixed(1) + 'px';
+  } else {
+    app.style.transform       = '';
+    app.style.transformOrigin = '';
+    app.style.maxWidth        = '';
+    app.style.margin          = '';
+    app.style.width           = '';
+    app.style.height          = '';
+  }
+}
+window.addEventListener('resize', scaleUI);
+scaleUI();
 
 connect();
 log('EEG Bridge UI loaded. Waiting for main.py …','info');

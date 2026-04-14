@@ -73,6 +73,7 @@ app = {
     "last_warmup":    False,  # for warmup-complete event
     "last_data":      None,
     "connected_port": "",
+    "osc_suppressed": False,   # True while loopback test is running
 }
 
 # ─────────────────────────────────────────────────────────
@@ -439,6 +440,8 @@ def serial_loop(port: str, baud: int, stop_event: threading.Event, processor: Pr
 # ─────────────────────────────────────────────────────────
 
 def send_osc(data: dict):
+    if app.get("osc_suppressed"):
+        return
     c = app.get("osc_client")
     if not c:
         return
@@ -509,6 +512,105 @@ def _get_ports() -> list[dict]:
             "arduino":    is_arduino,
         })
     return ports
+
+# ─────────────────────────────────────────────────────────
+# OSC loopback test
+# ─────────────────────────────────────────────────────────
+
+TEST_OSC_ADDRESSES = [
+    "/eeg/system/signal_ok",
+    "/eeg/system/warmup_done",
+    "/eeg/raw/attention",
+    "/eeg/raw/meditation",
+    "/eeg/raw/blink",
+    "/eeg/band/delta",
+    "/eeg/band/theta",
+    "/eeg/band/low_alpha",
+    "/eeg/band/high_alpha",
+    "/eeg/band/low_beta",
+    "/eeg/band/high_beta",
+    "/eeg/band/low_gamma",
+    "/eeg/band/high_gamma",
+    "/eeg/derived/alpha_beta_ratio",
+    "/eeg/derived/engagement_index",
+    "/eeg/derived/theta_alpha_ratio",
+    "/eeg/derived/band_energy",
+    "/eeg/derived/band_dominance",
+]
+
+
+async def run_osc_test(osc_port: int) -> dict:
+    """
+    Loopback OSC test — always uses 127.0.0.1 regardless of configured target IP.
+    1. Binds a listener on 127.0.0.1:osc_port
+    2. Sends one test message per address to that listener
+    3. Waits briefly for UDP packets to arrive
+    4. Returns pass/fail results per address
+    """
+    from pythonosc.osc_server import ThreadingOSCUDPServer
+    from pythonosc.dispatcher import Dispatcher
+
+    received: dict = {}
+
+    def _handler(addr, *args):
+        received[addr] = float(args[0]) if args else 0.0
+
+    dispatcher = Dispatcher()
+    dispatcher.set_default_handler(_handler)
+
+    try:
+        server = ThreadingOSCUDPServer(("127.0.0.1", osc_port), dispatcher)
+    except OSError as e:
+        return {"error": f"Cannot bind 127.0.0.1:{osc_port} — {e}"}
+
+    srv_thread = threading.Thread(target=server.serve_forever, daemon=True, name="osc-test-srv")
+    srv_thread.start()
+    await asyncio.sleep(0.05)   # let the thread start listening
+
+    # Build test values from last known session data (or sensible dummies)
+    last   = app.get("last_data") or {}
+    bands  = last.get("bands",   {})
+    derived = last.get("derived", {})
+    test_vals = {
+        "/eeg/system/signal_ok":          1.0,
+        "/eeg/system/warmup_done":        1.0,
+        "/eeg/raw/attention":             last.get("attention",  0.5),
+        "/eeg/raw/meditation":            last.get("meditation", 0.5),
+        "/eeg/raw/blink":                 last.get("blink",      0.0),
+        **{f"/eeg/band/{n}": bands.get(n, 0.5) for n in BAND_NAMES},
+        "/eeg/derived/alpha_beta_ratio":  derived.get("alpha_beta_ratio",  0.5),
+        "/eeg/derived/engagement_index":  derived.get("engagement_index",  0.5),
+        "/eeg/derived/theta_alpha_ratio": derived.get("theta_alpha_ratio", 0.5),
+        "/eeg/derived/band_energy":       derived.get("band_energy",       0.5),
+        "/eeg/derived/band_dominance":    derived.get("band_dominance",    0.5),
+    }
+
+    # Suppress live OSC so it doesn't bleed into the test listener
+    app["osc_suppressed"] = True
+    try:
+        test_client = udp_client.SimpleUDPClient("127.0.0.1", osc_port)
+        for addr, val in test_vals.items():
+            test_client.send_message(addr, float(val))
+        await asyncio.sleep(0.4)   # give UDP time to deliver on loopback
+    finally:
+        server.shutdown()
+        app["osc_suppressed"] = False
+
+    results = []
+    all_passed = True
+    for addr in TEST_OSC_ADDRESSES:
+        ok = addr in received
+        results.append({
+            "addr":     addr,
+            "received": ok,
+            "sent":     round(test_vals.get(addr, 0.5), 4),
+            "value":    round(received[addr], 4) if ok else None,
+        })
+        if not ok:
+            all_passed = False
+
+    return {"results": results, "all_passed": all_passed}
+
 
 # ─────────────────────────────────────────────────────────
 # WebSocket command handler
@@ -640,6 +742,26 @@ async def handle_command(msg: dict, ws):
                 "message": f"OSC update failed: {e}",
                 "level": "error"
             }))
+
+    # ── test_osc ─────────────────────────────────────────
+    elif cmd == "test_osc":
+        osc_port = int(msg.get("port", cfg.OSC_PORT))
+        _thread_log(f"OSC loopback test on 127.0.0.1:{osc_port} …", "info")
+        try:
+            result = await run_osc_test(osc_port)
+            if "error" in result:
+                _thread_log(f"OSC test failed: {result['error']}", "error")
+                await ws.send(json.dumps({"type": "osc_test_result", "error": result["error"]}))
+            else:
+                n_ok  = sum(1 for r in result["results"] if r["received"])
+                n_tot = len(result["results"])
+                status = "PASS" if result["all_passed"] else "FAIL"
+                level  = "info" if result["all_passed"] else "warn"
+                _thread_log(f"OSC test {status} — {n_ok}/{n_tot} addresses received", level)
+                await ws.send(json.dumps({"type": "osc_test_result", **result}))
+        except Exception as e:
+            _thread_log(f"OSC test error: {e}", "error")
+            await ws.send(json.dumps({"type": "osc_test_result", "error": str(e)}))
 
 # ─────────────────────────────────────────────────────────
 # WebSocket connection handler
