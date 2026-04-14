@@ -1,0 +1,307 @@
+Here's the full context document to paste into Claude Code:
+
+---
+
+**WHO:**
+Josh — artist, programmer, producer, light/sound tech. Co-founder and host of Artist's Escape, a free monthly pop-up maker space nonprofit in its second year, hosted at the Iredell Arts Council where he also works. Streams while working on projects. Strong background in experimental/generative art, creative coding, brain-computer interfaces, VR (Resonite), and Blender. Has previously built: BrainGrapher (single HTML file EEG visualizer using Web Serial API with arc gauges and band graphs), a Python WebSocket bridge from Arduino to Resonite, and a Recursive Witness Engine (local LLM consciousness simulation with Ollama). Also has a scale model of the Iredell Arts Council in Resonite built in Blender.
+
+---
+
+**WHAT AND WHY:**
+
+The project is an EEG-driven expressive presence system for VR (Resonite, Quest 3). The core idea comes from Jaron Lanier's concept of post-symbolic communication — specifically his observation that cephalopods (octopi, squid) communicate by changing the pigmentation, texture, and shape of their entire skin in real time, expressing internal state directly as a visible surface rather than through symbolic language. Lanier argued VR could enable a similar mode of communication for humans: instead of saying something, you *become* it. Your internal state shapes the world around you or the surface of your avatar directly.
+
+This project is a practical attempt at that. It is **not** a control system. It is not about moving objects with your mind or issuing commands. It is about making brain state continuously visible as a living, reactive skin on an avatar or object in Resonite — an expressive coat that breathes and shifts with your internal state. Think: chromatophores. The EEG is treated as a noisy, expressive signal source, not a precise input device.
+
+This aligns with Josh's broader artistic practice around generative art, non-verbal expression, and exploring AI/BCI from an artist's perspective (he previously made a generative HTML canvas piece called "emergence" and a YTP-style video exploring what it's like to be an LLM).
+
+---
+
+**HARDWARE SETUP:**
+
+- Mattel Mindflex Duel headset, hacked following the Frontier Nerds tutorial (frontiernerds.com/brain-hack)
+- TGAM (ThinkGear ASIC Module) board extracted from the left pod of the headset
+- Running on original AAA batteries (NOT powered from Arduino — Frontier Nerds confirmed Arduino 3.3V pin is unreliable for this)
+- Electrodes: copper sheet on forehead (signal), original ear clip (reference/ground)
+- TGAM T pin → Arduino RX pin, shared ground between TGAM and Arduino
+- Arduino Brain Library (by Eric Mika / Frontier Nerds) parses TGAM serial data
+- Arduino outputs CSV over serial at 9600 baud, ~1 packet/second
+- Known fix already applied: `#define _SS_MAX_RX_BUFF 256` in Arduino sketch to prevent SoftwareSerial buffer overflow
+- Hardware serial at 115200 baud used for PC communication
+- Josh has already confirmed signal is working with the existing BrainGrapher tool
+
+**The headset is being run as a loose experimental rig for now — TGAM board on a breadboard holder, long electrode wires, no enclosure. Future plan is to mount it to be wearable with Quest 3, with electrodes accessible at the forehead area alongside the headset.**
+
+---
+
+**TGAM DATA — EVERYTHING AVAILABLE:**
+
+The Arduino Brain Library CSV outputs these values once per second:
+
+| Field | Range | Notes |
+|---|---|---|
+| signal_quality | 0–200 | 0 = perfect, 200 = no contact. Gate all output on this. |
+| attention | 0–100 | NeuroSky eSense — proprietary algorithm |
+| meditation | 0–100 | NeuroSky eSense — proprietary algorithm |
+| blink | 0–255 | Event-based, fires on detected blink. Separate packet, may not appear every cycle. |
+| delta | raw int | Deep sleep, stillness, large values |
+| theta | raw int | Creative flow, drowsiness, meditation |
+| low_alpha | raw int | Relaxed awareness |
+| high_alpha | raw int | Eyes-closed relaxation |
+| low_beta | raw int | Active thinking, concentration |
+| high_beta | raw int | Stress, intense focus, anxiety |
+| low_gamma | raw int | Perceptual binding |
+| high_gamma | raw int | High cognitive load |
+
+**Important:** Raw band integers are enormous (often 50,000–500,000+) and vary wildly between people and sessions. They must be normalized before use. The blink value is also available as a separate detection event with strength 0–255.
+
+No heart rate, no breath rate, no motion data — the TGAM only outputs the above. Those would require additional hardware which is out of scope for this phase.
+
+---
+
+**WHAT WAS PLANNED AND WHY:**
+
+**Send ALL bands to Resonite** — not just attention/meditation. The community approach (BrainFlowsIntoVRChat / BrainFlowsIntoVR) confirms this is the right call. All 8 band power values + attention + meditation + blink + derived values all get sent as separate OSC float addresses. Resonite can ignore what it doesn't need. The bands are where the expressive richness lives — attention/meditation alone are too coarse.
+
+**EMA smoothing** — Exponential Moving Average, standard in the VRChat BCI community. Weights recent samples more heavily than a rolling average, so it responds to genuine changes while smoothing noise. The 1 packet/second update rate from the TGAM would cause jarring snapping without this. Different alpha values per signal type: bands 0.2, attention/meditation 0.15 (slower/more organic), blink 0.5 (faster, event-like), derived 0.1 (very smooth).
+
+**Session min/max normalization** — Raw band values vary hugely between people and sessions. Min/max scaling tracks the running min and max per band during the session and maps everything to 0.0–1.0 within observed range. Self-calibrates automatically — no manual setup needed. Has a 30-second warmup period while the range establishes, marked with a "CALIBRATING" flag in the UI and a `/eeg/system/warmup_done` OSC address.
+
+**Derived values** — Computed on the Python side before hitting Resonite, more expressive than raw bands:
+- `alpha_beta_ratio` — classic relaxation vs activation indicator
+- `engagement_index` — beta / (alpha + theta), focus measure
+- `theta_alpha_ratio` — creative/flow state indicator  
+- `band_energy` — overall neural "volume", sum of all normalized bands
+- `band_dominance` — which band is currently highest (0.0–7.0 float, maps to band index)
+- `dominant_band` — string name of dominant band (for logging/ML)
+
+**Signal quality gating** — When signal_quality > threshold (default 50), OSC output is frozen at last known good values and a `/eeg/system/signal_ok = 0.0` flag is sent. This prevents garbage data from corrupting the visual when the electrode loses contact during movement.
+
+**Session CSV logging** — Built in from day one specifically to support the future ML layer. Every session writes a timestamped CSV with all raw, processed, and derived values. This is the training data source for intent classification later.
+
+**Modular pipeline architecture** — Designed so the ML classification module slots in later as an optional add-on without touching the base system:
+```
+Serial Reader → Processor (EMA + normalize + derive) → OSC Sender → Resonite
+                                                     → Logger (CSV)
+                                                     ↓ (future)
+                                              ML Classifier → /eeg/class/intent OSC
+```
+
+---
+
+**FUTURE ML LAYER (not built yet, planned):**
+
+The Instagram inspiration: someone doing calibrated mental imagery classification. The user speaks a phrase/word aloud while EEG is recorded (N repetitions), building a template of what brain activity looks like during that phrase. During use, incoming EEG windows are compared against templates and the nearest match fires. It's not real mind-reading — it exploits the fact that vocalized and imagined speech share some frontal EEG patterns, especially subvocalization activating motor planning circuits.
+
+Plan: sklearn KNN or cosine similarity on band feature vectors. Small vocabulary (3–5 classes max with single-channel TGAM). Optional, session-calibrated, completely separate from base pipeline. OSC address: `/eeg/class/intent` as string label or int index. The session logging was specifically designed to capture training data for this.
+
+---
+
+**OSC ADDRESS SCHEMA (full, as implemented):**
+
+```
+/eeg/system/signal_ok          float  1.0=good, 0.0=bad contact
+/eeg/system/warmup_done        float  1.0=normalization stable
+
+/eeg/raw/attention             float  0.0–1.0
+/eeg/raw/meditation            float  0.0–1.0
+/eeg/raw/blink                 float  0.0–1.0
+
+/eeg/band/delta                float  0.0–1.0 (normalized, EMA smoothed)
+/eeg/band/theta                float  0.0–1.0
+/eeg/band/low_alpha            float  0.0–1.0
+/eeg/band/high_alpha           float  0.0–1.0
+/eeg/band/low_beta             float  0.0–1.0
+/eeg/band/high_beta            float  0.0–1.0
+/eeg/band/low_gamma            float  0.0–1.0
+/eeg/band/high_gamma           float  0.0–1.0
+
+/eeg/derived/alpha_beta_ratio  float  0.0–1.0
+/eeg/derived/engagement_index  float  0.0–1.0
+/eeg/derived/theta_alpha_ratio float  0.0–1.0
+/eeg/derived/band_energy       float  0.0–1.0
+/eeg/derived/band_dominance    float  0.0–7.0
+
+(future)
+/eeg/class/intent              string or int
+```
+
+---
+
+**RESONITE INTEGRATION PLAN:**
+
+Resonite has built-in OSC support. The signal chain in Resonite for each value:
+```
+OSC_Receiver component
+  → OSC_Value (float) component at matching address
+    → Value Smooth Lerp<float> node in ProtoFlux (smooths the 1Hz update on Resonite side)
+      → Value Field Drive<float> node
+        → material parameter / blendshape / anything else
+```
+
+**The skin approach — material stacking:**
+Multiple semi-transparent mesh renderers stacked on the same object (avatar surface or separate object), each layer driven by a different EEG band. Like biological chromatophore layers:
+- Layer 1 (base/opacity): driven by meditation — how "present" or opaque the surface is
+- Layer 2 (color/pattern): driven by alpha/theta — warm vs cool, organic shifting
+- Layer 3 (accent/detail): driven by beta/attention — sharp details activate with focus
+- Layer 4 (event flash): driven by blink — impulse trigger, pulse/ripple across surface
+
+Other mappings discussed:
+- Alpha → material emission intensity (calm = glow)
+- Beta → hue shift (tension = color change)
+- Theta → blendshape inflate/organic deform (flow = expansion)
+- Attention → texture scroll speed (focus = faster movement)
+- Band_energy → overall scale or brightness
+- Alpha_beta_ratio → color temperature (warm/cool)
+- Theta_alpha_ratio → noise/distortion parameter
+
+Resonite note: no custom shaders yet (on roadmap). Achieve effects through shader combinations, ProtoFlux-driven material parameters, and material stacking. `DynamicBlendShapeDriver` component for blendshapes, `Value Field Drive<float>` for material fields.
+
+**OSC gotcha:** Resonite takes ownership of the OSC port — don't run anything else on port 9001. Running Resonite and the Python script on the same machine → use 127.0.0.1.
+
+---
+
+**THE 5 FILES BUILT SO FAR:**
+
+All in one folder, run with `python main.py`:
+
+**`config.py`** — all parameters: serial port (empty = auto-detect), baud rate, OSC IP/port, WebSocket port (8765), HTTP port (8766), signal threshold, EMA alphas, warmup seconds, log dir.
+
+**`processor.py`** — `Processor` class. `reset()` clears all state. `process(raw_dict)` → returns full processed dict. EMA per key, running min/max per band, derived value computation. Returns: signal_ok, signal_quality, warmup_done, attention (0-1), meditation (0-1), blink (0-1), attention_raw, meditation_raw, bands dict (all 8, normalized), bands_raw dict, derived dict.
+
+**`main.py`** — asyncio backend. Dependency checks on startup with friendly install instructions. Serial reader in daemon thread: connects, waits for Arduino reset, reads lines, parses Brain Library CSV (handles 11-field and 12-field formats, optional blink), processes, queues. WebSocket server handles commands: get_ports, start, stop, toggle_logging, set_osc. HTTP server serves ui.html. `dispatch_loop()` asyncio task at 20Hz: dequeues data, sends OSC, writes log row, broadcasts to UI. Thread-safe helpers for logging from serial thread. Graceful Ctrl+C shutdown.
+
+**`ui.html`** — single file. WebSocket auto-reconnects every 3s if dropped. Dark neural-terminal aesthetic: VT323 (display/headers) + Share Tech Mono (data values), cyan (#00d4ff) on near-black (#050810), scanline overlay effect. Features: COM port dropdown auto-populated from Python with Arduino devices flagged as `◆ ARDUINO` and auto-selected; baud selector; start/stop button changes color/label with state; OSC IP:port fields with live update; logging toggle with green indicator; signal quality as large number with green/amber/red coloring and bar; "CALIBRATING/CALIBRATED" warmup badge; attention+meditation as SVG arc gauges; blink as animated bar; 8 band bars animated with dominant band at full opacity, others dimmed; derived values grid with mini bars; scrolling console log with timestamps and warn/error color coding.
+
+**`requirements.txt`** — pyserial>=3.5, python-osc>=1.8, websockets>=11.0
+
+---
+
+**WHAT HASN'T BEEN DONE YET / NEXT STEPS:**
+
+1. Actually run the code against live Arduino and fix any bugs that come up
+2. Test OSC reception in Resonite with the debug panel
+3. Build the material stacking skin setup in Resonite using ProtoFlux
+4. Wire OSC values to materials/blendshapes on avatar or test object
+5. ML calibration layer (later phase)
+6. Possibly make the UI prettier / add more visualization (waveform history, etc.)
+
+
+Looking back through everything, a few things stand out that we touched on but didn't fully resolve or build:
+
+**The Arduino sketch itself**
+
+We never actually wrote or verified the Arduino sketch. We assumed it's outputting the standard Brain Library CSV format because your BrainGrapher already works, but it's worth confirming — specifically whether your sketch outputs the blink field as a 12th column or not, since the parser handles both but the blink value being zero forever would be a silent failure. Worth adding to the context doc.
+
+**The 9600 vs 57600 baud decision has a real consequence**
+
+At 9600 baud you get the processed band values once per second. At 57600 baud with the resistor mod to the TGAM board you get raw EEG at 512Hz — a completely different data stream that would need its own processing pipeline. The current code assumes 9600 and the processed Brain Library output. If you ever switch to 57600 raw mode the parser breaks entirely and you'd need a different approach. This should be clearly noted in the config so you don't accidentally switch baud rate in the UI and wonder why everything stops working.
+
+**The 1 packet/second update rate and what it means for the skin**
+
+We talked about EMA and Resonite's SmoothLerp hiding the update rate, but didn't fully think through what this means aesthetically. At 1Hz the skin can't respond faster than once per second at the source. For something that's supposed to feel like breathing chromatophores, you want the *visual* motion to be continuous even when the data is sparse. The recommendation we landed on — drive animated texture parameters and noise offsets that have their own motion, with EEG steering the character of that motion rather than being the sole source — is the right approach, but it means the Resonite setup needs to be built with this in mind from the start. The skin should have baseline animation that EEG modulates, not EEG being the only thing moving it.
+
+**Port persistence across machines**
+
+The config has `SERIAL_PORT = ""` for auto-detect, but the UI also lets you select a port manually. What the code doesn't do is remember your last selection between sessions. On a different machine COM3 might be something else entirely. This is minor but worth a note — the UI currently resets to blank every launch, and if the Arduino auto-detection works reliably enough this might not matter, but if you're switching between your stream machine and a laptop regularly it's a small friction point.
+
+**The Quest 3 and Air Link latency**
+
+We discussed the hardware setup but never addressed the fact that Quest 3 running Resonite via Air Link or Virtual Desktop introduces its own latency on top of the 1Hz EEG update rate. The OSC packets go from Python on the PC to Resonite on the PC (localhost), so the OSC path itself is zero latency — but the visual result you see in the headset has Air Link's rendering pipeline on top. This probably doesn't matter for slow expressive changes but is worth knowing if something feels sluggish.
+
+**No graceful handling of the TGAM "poor signal" behavior**
+
+The TGAM has a specific behavior documented in the protocol: if it receives poor signal for 7 consecutive seconds it resets, and if the electrodes are off-head for 4 consecutive seconds it resets. After a reset the attention/meditation values stop updating until contact is reestablished. The current code gates on signal quality correctly, but doesn't specifically handle the reset state — there's a difference between "signal quality is 50" (marginal contact) and "signal quality is 200 and has been for 7 seconds" (board has reset and needs a moment to re-acquire). In practice this probably just looks like a longer freeze which is fine, but worth knowing if you see the system take longer to recover than expected after taking the headset off.
+
+**The design doc doesn't reference the code**
+
+The checkpoint design doc we wrote earlier describes the planned architecture. Now that the code exists, the doc is slightly out of date — for example it describes a `serial_reader.py` as a separate file but the final implementation folded that into `main.py`. Minor, but if you're handing this to someone else or coming back to it after a break the doc and code should agree.
+
+**What we never discussed: how other people in the space will actually perceive the skin**
+
+This is more conceptual than technical but it's the whole point of the project. In Resonite, other users see your avatar. If your skin is reacting to your brain state in real time, other people are seeing a continuous readout of your internal state — which is exactly the post-symbolic communication Lanier was describing. But that means the mapping choices you make in Resonite are actually a design language. What does high beta look like? What does deep meditation look like? These are aesthetic and communicative decisions, not just parameter tweaks. It might be worth sketching out what emotional/cognitive states you want to be legible to others vs what you want to keep subtle. The octopus doesn't just react randomly — the patterns mean something to other octopi. That intentional design layer is the part nobody in the BCI/VR community has really worked out yet, and it's where your project could be genuinely new.
+
+
+Yes, a few more things that would make a real difference when picking this up in a fresh context:
+
+**The Arduino sketch specifics**
+
+Paste your actual Arduino sketch into the doc. The Python parser needs to match exactly what the Arduino outputs. Specifically: whether blink is included as column 12, whether there's any prefix text before the CSV line, whether the sketch uses SoftwareSerial or hardware serial, and what the exact `#define _SS_MAX_RX_BUFF 256` placement looks like. If the sketch has already been modified from the standard BrainSerialOut example, those modifications need to be documented.
+
+**Your exact serial output**
+
+Open Arduino Serial Monitor at 9600 baud and paste a few lines of actual output into the doc. Something like:
+```
+0,45,62,12453,8932,4521,3201,8934,5621,1203,892
+0,47,61,12100,9012,4489,3341,8821,5504,1189,901,0
+```
+This tells whoever picks it up — including a fresh Claude session — exactly what format is actually coming off the wire, including whether blink appears, whether signal 0 actually shows up when contact is good, and whether there's any garbage on the line before the CSV starts.
+
+**Your file paths and machine setup**
+
+Where the project folder actually lives on your machine. What Python version you're running (`python --version`). Whether you're on Windows (COM ports) or Mac/Linux (dev/tty paths). What your Arduino shows up as in Device Manager or equivalent — the exact string, like "USB-SERIAL CH340 (COM4)" — so the auto-detection logic can be verified against reality.
+
+**Your existing BrainGrapher code**
+
+Paste it in or reference it. It's the proof of concept that the serial pipeline works, and the Python bridge to Resonite via WebSocket you already built is directly relevant to how this project connects. Knowing what already works eliminates a whole class of debugging.
+
+**The Resonite world/avatar context**
+
+What you're planning to attach the skin to — your own avatar, a separate object, something you'll build from scratch. Whether you already have a test world set up or need to build one. What avatar you're using as a base if any. Whether you have ProtoFlux experience already or need to start from basics. This matters because the Resonite setup is the other half of the project and a fresh session will need to know where you are with it.
+
+**The BrainFlowsIntoVR reference**
+
+Include the URL: `https://codeberg.org/NatOsaka/BrainFlowsIntoVR` — this is the project that does almost exactly what you're building but for a different hardware stack. It's the closest existing reference for both the OSC schema and the Resonite integration approach. A fresh session should know this exists and that your schema is deliberately compatible with its conventions.
+
+**What "working" actually means for this project**
+
+Write down what a successful test looks like to you. For example: "I can see all 8 band values changing in the UI when I put the headset on and blink. Signal quality reads below 50 with good contact. Resonite receives the OSC values and I can see them in the OSC debug panel. A test material on a cube in Resonite visibly changes color/emission based on my meditation value." Without this, a fresh session might optimize for the wrong thing.
+
+**Your streaming setup note**
+
+You mentioned you stream while working on projects. Worth noting in the doc so Claude Code knows the UI being visible and readable on stream is a design constraint, not just a nice-to-have. The dark terminal aesthetic was specifically chosen for this. Any future UI changes should keep that in mind.
+
+**One technical thing we never wrote down explicitly**
+
+The Brain Library's `getCSV()` function outputs values even when signal quality is 200 (no contact) — it just outputs zeros for attention/meditation and whatever noise for the bands. The signal quality value itself is always valid. This means the gating logic in `processor.py` is essential, not optional — without it you'd be sending normalized noise to Resonite whenever the headset isn't on your head. Worth stating explicitly so nobody removes that check thinking it's unnecessary.
+
+**The conceptual throughline in one sentence**
+
+Write this down verbatim somewhere in the doc:
+
+*"The EEG is not controlling anything. It is making internal state visible as a surface. The avatar skin is a chromatophore layer. Other people in Resonite can read your state the way an octopus reads another octopus."*
+
+That one sentence will stop any future session from drifting toward building a command/control BCI instead of what this actually is.
+
+
+
+Here is the arduino inno file
+#include <SoftwareSerial.h>
+#include <Brain.h>
+
+// Set up SoftwareSerial to listen on Pin 10
+// Pin 10 = RX (Connect headset "T" wire here)
+// Pin 11 = TX (Unused, but required by the library)
+SoftwareSerial softSerial(10, 11);
+
+// Tell the Brain library to use our SoftwareSerial instead of the default
+Brain brain(softSerial);
+
+void setup() {
+    // Hardware Serial for the computer (USB)
+    Serial.begin(9600);
+    
+    // Software Serial for the headset
+    softSerial.begin(9600);
+    
+    Serial.println("--- Bridge Starting: Listening on Pin 10 ---");
+}
+
+void loop() {
+    // Check if a full packet has arrived from the headset
+    if (brain.update()) {
+        // This sends: signal, attention, meditation, delta, theta, etc.
+        // This is exactly what your main.py / processor.py is looking for.
+        Serial.println(brain.readCSV());
+    }
+}
