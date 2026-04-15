@@ -44,6 +44,19 @@ from pythonosc import udp_client
 import config as cfg
 from processor import Processor, BAND_NAMES
 
+# ── Optional classifier ───────────────────────────────────────────
+# Loaded at startup if cfg.CLASSIFIER_ENABLED = True.
+# If classifier.py or numpy is missing the bridge still runs normally.
+_classifier = None
+if getattr(cfg, 'CLASSIFIER_ENABLED', False):
+    try:
+        from classifier import Classifier
+        _classifier = Classifier(cfg)
+    except ImportError:
+        print("  [WARN] classifier.py or numpy not found — classifier disabled.")
+    except Exception as _cls_err:
+        print(f"  [WARN] Classifier failed to load: {_cls_err}")
+
 # ─────────────────────────────────────────────────────────
 # Global state
 # ─────────────────────────────────────────────────────────
@@ -74,6 +87,60 @@ app = {
     "last_data":      None,
     "connected_port": "",
     "osc_suppressed": False,   # True while loopback test is running
+}
+
+# ─────────────────────────────────────────────────────────
+# Training protocol
+# ─────────────────────────────────────────────────────────
+
+TRAINING_PROTOCOL = [
+    {
+        "name":        "SETTLING",
+        "label":       "",
+        "duration":    15,
+        "instruction": "Sit comfortably. Let the signal stabilize. Breathe normally.",
+    },
+    {
+        "name":        "BASELINE",
+        "label":       "baseline",
+        "duration":    20,
+        "instruction": "Eyes open. Soft focus. No particular thought. Just rest.",
+    },
+    {
+        "name":        "EYES_CLOSED",
+        "label":       "eyes_closed",
+        "duration":    20,
+        "instruction": "Close your eyes. Let thoughts drift. Don't direct anything.",
+    },
+    {
+        "name":        "ARITHMETIC",
+        "label":       "arithmetic",
+        "duration":    20,
+        "instruction": "Count backwards from 300 by 7s silently. 300... 293... 286...",
+    },
+    {
+        "name":        "IMAGERY",
+        "label":       "imagery",
+        "duration":    20,
+        "instruction": "Eyes closed. Build a detailed familiar space in your mind. Light, textures, scale.",
+    },
+    {
+        "name":        "AWARENESS",
+        "label":       "awareness",
+        "duration":    20,
+        "instruction": "Eyes open. Take in everything in your visual field equally. Wide diffuse attention.",
+    },
+]
+
+_TRAINING_TOTAL_DURATION = sum(s["duration"] for s in TRAINING_PROTOCOL)
+
+_training = {
+    "active":     False,
+    "round":      0,
+    "label":      "",       # raw label (empty during SETTLING or idle)
+    "full_label": "",       # label + round suffix e.g. "baseline_r1"
+    "segment":    "",       # segment name e.g. "BASELINE"
+    "task":       None,     # asyncio.Task reference
 }
 
 # ─────────────────────────────────────────────────────────
@@ -111,6 +178,7 @@ def start_log():
            'band_energy', 'band_dominance', 'dominant_band']
         + ['att_10s', 'med_10s', 'energy_10s',
            'att_30s', 'med_30s', 'energy_30s']
+        + ['training_label', 'training_round', 'signal_poor']
     )
     app['log_file']   = f
     app['csv_writer'] = writer
@@ -242,6 +310,15 @@ def write_log_row(data: dict):
                rolling.get('att_30s',    0),
                rolling.get('med_30s',    0),
                rolling.get('energy_30s', 0)]
+            + [
+               # training_label — empty during SETTLING or when idle
+               _training.get("full_label", ""),
+               # training_round — populated whenever a round is active
+               _training.get("round", "") if _training.get("active") else "",
+               # signal_poor — 1 only during a labelled segment with poor contact
+               1 if (_training.get("full_label") and
+                     data.get("signal_quality", 200) > 50) else 0,
+              ]
         )
 
         # ── Update session stats ──────────────────────────
@@ -475,7 +552,7 @@ def send_osc(data: dict):
 # ─────────────────────────────────────────────────────────
 
 async def dispatch_loop():
-    """Reads processed data from queue → OSC + UI + logger."""
+    """Reads processed data from queue → OSC + UI + logger + classifier."""
     while True:
         try:
             data = data_queue.get_nowait()
@@ -486,6 +563,13 @@ async def dispatch_loop():
 
             if app["logging"]:
                 write_log_row(data)
+
+            # ── Live classifier ───────────────────────────────
+            if _classifier and app["running"] and data.get("signal_ok"):
+                cmd = _classifier.update(data.get("bands", {}))
+                if cmd:
+                    _send_classifier_osc(cmd)
+                    await _broadcast(json.dumps({"type": "classifier_event", **cmd}))
 
             await _broadcast(json.dumps({"type": "data", "data": data}))
 
@@ -512,6 +596,105 @@ def _get_ports() -> list[dict]:
             "arduino":    is_arduino,
         })
     return ports
+
+# ─────────────────────────────────────────────────────────
+# Training protocol runner
+# ─────────────────────────────────────────────────────────
+
+async def run_training_round(round_num: int):
+    """
+    Runs the full training protocol as an asyncio task.
+    Broadcasts a 'training_segment' message at the start of each segment
+    so the UI can update the countdown and instructions.
+    Writes training_label / training_round / signal_poor into every CSV
+    row via the _training state dict (read in write_log_row).
+    """
+    _training["active"] = True
+    _training["round"]  = round_num
+    elapsed_total       = 0
+
+    try:
+        for seg in TRAINING_PROTOCOL:
+            _training["label"]      = seg["label"]
+            _training["full_label"] = (
+                f"{seg['label']}_r{round_num}" if seg["label"] else ""
+            )
+            _training["segment"] = seg["name"]
+
+            await _broadcast(json.dumps({
+                "type":           "training_segment",
+                "segment_name":   seg["name"],
+                "label":          seg["label"],
+                "instruction":    seg["instruction"],
+                "duration":       seg["duration"],
+                "elapsed_total":  elapsed_total,
+                "total_duration": _TRAINING_TOTAL_DURATION,
+                "round":          round_num,
+            }))
+
+            _thread_log(
+                f"Training r{round_num}: {seg['name']} ({seg['duration']}s) …", "info"
+            )
+            await asyncio.sleep(seg["duration"])
+            elapsed_total += seg["duration"]
+
+        await _broadcast(json.dumps({
+            "type":  "training_complete",
+            "round": round_num,
+        }))
+        _thread_log(f"Training round {round_num} complete.", "info")
+
+    except asyncio.CancelledError:
+        _thread_log("Training cancelled.", "warn")
+        raise
+
+    finally:
+        _training["active"]     = False
+        _training["label"]      = ""
+        _training["full_label"] = ""
+        _training["segment"]    = ""
+        _training["task"]       = None
+
+
+# ─────────────────────────────────────────────────────────
+# Classifier OSC sender
+# ─────────────────────────────────────────────────────────
+
+def _send_classifier_osc(cmd: dict):
+    """Send a classifier command event over OSC."""
+    c = app.get("osc_client")
+    if not c or app.get("osc_suppressed"):
+        return
+    try:
+        c.send_message("/eeg/command/label",      cmd["label"])
+        c.send_message("/eeg/command/confidence", float(cmd["confidence"]))
+        c.send_message("/eeg/command/index",      int(cmd["index"]))
+    except Exception as e:
+        _thread_log(f"Classifier OSC error: {e}", "warn")
+
+
+def _classifier_status_payload() -> dict:
+    """Build the classifier_status WebSocket payload."""
+    if _classifier is None:
+        return {
+            "type":      "classifier_status",
+            "enabled":   False,
+            "loaded":    False,
+            "demo":      False,
+            "counts":    {},
+            "total":     0,
+            "threshold": getattr(cfg, 'CLASSIFIER_THRESHOLD', 0.75),
+        }
+    return {
+        "type":      "classifier_status",
+        "enabled":   True,
+        "loaded":    _classifier.loaded,
+        "demo":      _classifier._demo_mode,
+        "counts":    _classifier.counts_by_label,
+        "total":     _classifier.total_examples,
+        "threshold": _classifier.threshold,
+    }
+
 
 # ─────────────────────────────────────────────────────────
 # OSC loopback test
@@ -763,6 +946,50 @@ async def handle_command(msg: dict, ws):
             _thread_log(f"OSC test error: {e}", "error")
             await ws.send(json.dumps({"type": "osc_test_result", "error": str(e)}))
 
+    # ── start_training ───────────────────────────────────
+    elif cmd == "start_training":
+        if _training["active"]:
+            await ws.send(json.dumps({
+                "type": "log", "message": "Training already running.", "level": "warn"
+            }))
+            return
+        if not app["logging"]:
+            _thread_log(
+                "Logging is off — training data will not be saved. "
+                "Enable logging to capture labelled EEG data.", "warn"
+            )
+        round_num = _training["round"] + 1
+        _training["task"] = asyncio.create_task(run_training_round(round_num))
+
+    # ── stop_training ────────────────────────────────────
+    elif cmd == "stop_training":
+        task = _training.get("task")
+        if task and not task.done():
+            task.cancel()
+        _thread_log("Training stopped.", "warn")
+
+    # ── load_classifier ──────────────────────────────────
+    elif cmd == "load_classifier":
+        if _classifier is None:
+            await ws.send(json.dumps({
+                "type": "log",
+                "message": "Classifier not enabled — set CLASSIFIER_ENABLED = True in config.py.",
+                "level": "warn"
+            }))
+        else:
+            _classifier.reload()
+            status = (f"{_classifier.total_examples} examples loaded"
+                      if _classifier.loaded else "demo mode (no manifest found)")
+            _thread_log(f"Classifier reloaded — {status}", "info")
+            await ws.send(json.dumps(_classifier_status_payload()))
+
+    # ── set_threshold ────────────────────────────────────
+    elif cmd == "set_threshold":
+        if _classifier:
+            t = max(0.1, min(1.0, float(msg.get("threshold", 0.75))))
+            _classifier.threshold = t
+            _thread_log(f"Classifier threshold → {t:.2f}", "info")
+
 # ─────────────────────────────────────────────────────────
 # WebSocket connection handler
 # ─────────────────────────────────────────────────────────
@@ -789,6 +1016,7 @@ async def ws_handler(websocket):
         "osc_port": cfg.OSC_PORT,
         "baud":     cfg.BAUD_RATE,
     }))
+    await websocket.send(json.dumps(_classifier_status_payload()))
 
     try:
         async for raw_msg in websocket:
@@ -844,6 +1072,12 @@ async def main():
     print(f"  WebSocket : ws://localhost:{cfg.WS_PORT}")
     print(f"  UI        : http://localhost:{cfg.HTTP_PORT}/ui.html")
     print(f"  OSC target: {cfg.OSC_IP}:{cfg.OSC_PORT}")
+    if _classifier is None:
+        print(f"  Classifier: disabled (CLASSIFIER_ENABLED = False)")
+    elif _classifier.loaded:
+        print(f"  Classifier: {_classifier.total_examples} examples loaded")
+    else:
+        print(f"  Classifier: demo mode (run generate_heatmaps.py first)")
     print(f"{'─'*50}\n")
     print("  Press Ctrl+C to stop.\n")
 

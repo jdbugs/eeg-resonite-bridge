@@ -102,7 +102,7 @@ header {
 .panel-label::before { content: '> '; color: var(--text-dim); }
 
 /* ── LEFT COLUMN ─────────────────────────────────────────────── */
-.left { display: flex; flex-direction: column; gap: 6px; }
+.left { display: flex; flex-direction: column; gap: 6px; overflow-y: auto; min-height: 0; }
 
 .controls { display: flex; flex-direction: column; gap: 6px; }
 label { display: block; color: var(--text-dim); font-size: 10px; margin-bottom: 2px; }
@@ -325,6 +325,60 @@ footer { border-top: 1px solid var(--border); }
 }
 .btn-test:hover { background: var(--warn); color: var(--bg); }
 .btn-test.running { opacity: 0.5; pointer-events: none; }
+
+/* ── Training panel ──────────────────────────────────────────── */
+.panel-toggle { cursor: pointer; user-select: none; display: flex; align-items: center; justify-content: space-between; }
+.toggle-icon  { font-size: 10px; color: var(--text-dim); transition: transform 0.2s; }
+.toggle-icon.open { transform: rotate(90deg); }
+
+.train-seg-name {
+  font-family: 'VT323', monospace; font-size: 20px; color: var(--accent);
+  letter-spacing: 2px; margin-bottom: 2px;
+  text-shadow: 0 0 8px rgba(255,170,0,0.4);
+}
+.train-countdown {
+  font-family: 'VT323', monospace; font-size: 52px; line-height: 1;
+  color: var(--text-bright); text-align: center; padding: 4px 0;
+  text-shadow: 0 0 18px rgba(255,204,68,0.5);
+}
+.train-instruction {
+  font-size: 9px; color: var(--text); line-height: 1.5;
+  margin: 4px 0 6px; border-left: 2px solid var(--border); padding-left: 6px;
+}
+.train-label-badge {
+  display: inline-block; font-size: 8px; letter-spacing: 1px;
+  padding: 1px 6px; border: 1px solid var(--border2); color: var(--text-dim);
+}
+.train-label-badge.active { border-color: var(--accent); color: var(--accent); }
+.train-progress-wrap { height: 3px; background: var(--surface2); margin-top: 6px; }
+.train-progress-bar  { height: 100%; background: var(--accent); transition: width 1s linear; width: 0%; }
+
+.btn-train-run {
+  width: 100%; font-family: 'VT323', monospace; font-size: 17px; letter-spacing: 2px;
+  padding: 7px; border: 1px solid var(--accent); color: var(--accent);
+  background: var(--accent-dim); cursor: pointer; transition: all 0.15s;
+}
+.btn-train-run:hover  { background: var(--accent); color: var(--bg); }
+.btn-train-stop {
+  font-size: 9px; padding: 2px 8px; border: 1px solid var(--bad);
+  color: var(--bad); background: transparent; cursor: pointer;
+}
+.btn-train-stop:hover { background: var(--bad); color: var(--bg); }
+
+/* ── Classifier panel ────────────────────────────────────────── */
+.cls-status { font-family: 'VT323', monospace; font-size: 14px; letter-spacing: 1px; margin-bottom: 5px; }
+.cls-status.loaded   { color: var(--good); }
+.cls-status.demo     { color: var(--warn); }
+.cls-status.disabled { color: var(--text-dim); }
+.cls-counts { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; margin-bottom: 6px; }
+.cls-count-label { font-size: 8px; color: var(--text-dim); }
+.cls-count-val   { font-size: 8px; color: var(--text-bright); text-align: right; }
+.cls-command { font-family: 'VT323', monospace; font-size: 18px; color: var(--accent); line-height: 1; }
+.cls-conf    { font-size: 8px; color: var(--text-dim); margin-bottom: 5px; }
+.cls-thresh-row { display: flex; align-items: center; gap: 5px; margin-top: 4px; }
+.cls-thresh-lbl { font-size: 8px; color: var(--text-dim); white-space: nowrap; }
+input[type=range] { flex: 1; accent-color: var(--accent); cursor: pointer; }
+.cls-thresh-val { font-family: 'VT323', monospace; font-size: 14px; color: var(--accent); min-width: 30px; text-align: right; }
 </style>
 </head>
 <body>
@@ -401,6 +455,49 @@ footer { border-top: 1px solid var(--border); }
         <div class="signal-bar-wrap"><div class="signal-bar" id="signalBar" style="width:0%"></div></div>
         <div class="warmup-badge" id="warmupBadge" style="margin-top:6px;width:100%">CALIBRATING …</div>
       </div>
+
+      <!-- ─── TRAINING PANEL (collapsible) ─── -->
+      <div class="panel">
+        <div class="panel-label panel-toggle" id="trainingToggle">
+          TRAINING <span class="toggle-icon" id="trainingIcon">▶</span>
+        </div>
+        <div id="trainingContent" style="display:none;padding-top:6px">
+
+          <!-- idle: show run button -->
+          <div id="trainIdle">
+            <button class="btn-train-run" id="trainStartBtn">▶ RUN PROTOCOL</button>
+            <div style="font-size:8px;color:var(--text-dim);margin-top:4px;line-height:1.4">
+              115 s &nbsp;·&nbsp; 5 labelled states<br>Enable logging to save training data.
+            </div>
+          </div>
+
+          <!-- active: countdown + instruction -->
+          <div id="trainActive" style="display:none">
+            <div class="train-seg-name"    id="trainSegName">—</div>
+            <div class="train-countdown"   id="trainCountdown">00</div>
+            <div class="train-instruction" id="trainInstruction"></div>
+            <div class="train-label-badge" id="trainLabelBadge">—</div>
+            <div class="train-progress-wrap">
+              <div class="train-progress-bar" id="trainProgressBar"></div>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:5px">
+              <span style="font-size:8px;color:var(--text-dim)" id="trainRound">ROUND 1</span>
+              <button class="btn-train-stop" id="trainStopBtn">STOP</button>
+            </div>
+          </div>
+
+          <!-- complete: run-again -->
+          <div id="trainComplete" style="display:none">
+            <div style="font-family:'VT323',monospace;font-size:15px;color:var(--good);margin-bottom:5px">ROUND COMPLETE ✓</div>
+            <div class="train-progress-wrap" style="margin-bottom:6px">
+              <div class="train-progress-bar" id="trainProgressBarDone" style="width:100%"></div>
+            </div>
+            <button class="btn-train-run" id="trainAgainBtn">▶ RUN AGAIN</button>
+          </div>
+
+        </div>
+      </div>
+
     </div>
 
     <!-- ═══ CENTER ═══ -->
@@ -549,6 +646,24 @@ footer { border-top: 1px solid var(--border); }
         </div>
       </div>
 
+      <!-- ─── CLASSIFIER PANEL ─── -->
+      <div class="panel">
+        <div class="panel-label">CLASSIFIER</div>
+        <div class="cls-status disabled" id="clsStatus">NOT ENABLED</div>
+        <div class="cls-counts" id="clsCounts"></div>
+        <div style="font-size:8px;color:var(--text-dim);margin-bottom:2px">LAST COMMAND</div>
+        <div class="cls-command" id="clsCommand">—</div>
+        <div class="cls-conf"    id="clsConf"></div>
+        <div class="cls-thresh-row">
+          <span class="cls-thresh-lbl">THRESHOLD</span>
+          <input type="range" id="thresholdSlider" min="0.50" max="1.00" step="0.01" value="0.75">
+          <span class="cls-thresh-val" id="thresholdVal">0.75</span>
+        </div>
+        <div style="margin-top:6px">
+          <button class="btn" style="width:100%;font-size:10px" id="clsReloadBtn">RELOAD DATA</button>
+        </div>
+      </div>
+
     </div><!-- /right -->
   </div><!-- /main -->
 
@@ -671,9 +786,13 @@ function handleMessage(msg) {
       if (msg.osc_port) document.getElementById('oscPort').value    = msg.osc_port;
       if (msg.baud)     document.getElementById('baudSelect').value = String(msg.baud);
       break;
-    case 'data':            ingestData(msg.data); break;
-    case 'log':             log(msg.message, msg.level || 'info'); break;
-    case 'osc_test_result': handleOscTestResult(msg); break;
+    case 'data':             ingestData(msg.data); break;
+    case 'log':              log(msg.message, msg.level || 'info'); break;
+    case 'osc_test_result':  handleOscTestResult(msg); break;
+    case 'training_segment': handleTrainingSegment(msg); break;
+    case 'training_complete':handleTrainingComplete(msg); break;
+    case 'classifier_status':handleClassifierStatus(msg); break;
+    case 'classifier_event': handleClassifierEvent(msg);  break;
   }
 }
 
@@ -1059,6 +1178,128 @@ function dismissOscTest() {
   document.getElementById('oscTestPanel').classList.remove('visible');
   if (oscTestDismissTimer) { clearTimeout(oscTestDismissTimer); oscTestDismissTimer = null; }
 }
+
+// ── Training mode ────────────────────────────────────────────────
+let trainTimer       = null;
+let trainSecsLeft    = 0;
+let trainElapsed     = 0;
+let trainTotalDur    = 115;
+let trainPanelOpen   = false;
+
+// Toggle collapsible panel
+document.getElementById('trainingToggle').onclick = () => {
+  trainPanelOpen = !trainPanelOpen;
+  document.getElementById('trainingContent').style.display = trainPanelOpen ? 'block' : 'none';
+  document.getElementById('trainingIcon').className = 'toggle-icon' + (trainPanelOpen ? ' open' : '');
+};
+
+document.getElementById('trainStartBtn').onclick = () => send({ type: 'start_training' });
+document.getElementById('trainAgainBtn').onclick = () => send({ type: 'start_training' });
+document.getElementById('trainStopBtn').onclick  = () => send({ type: 'stop_training' });
+
+function handleTrainingSegment(msg) {
+  trainSecsLeft = msg.duration;
+  trainElapsed  = msg.elapsed_total;
+  trainTotalDur = msg.total_duration;
+
+  // Auto-open the panel on first segment
+  if (!trainPanelOpen) {
+    trainPanelOpen = true;
+    document.getElementById('trainingContent').style.display = 'block';
+    document.getElementById('trainingIcon').className = 'toggle-icon open';
+  }
+
+  // Switch view
+  document.getElementById('trainIdle').style.display     = 'none';
+  document.getElementById('trainComplete').style.display = 'none';
+  document.getElementById('trainActive').style.display   = 'block';
+
+  document.getElementById('trainSegName').textContent    = msg.segment_name;
+  document.getElementById('trainInstruction').textContent = msg.instruction;
+  document.getElementById('trainRound').textContent      = `ROUND ${msg.round}`;
+
+  const badge = document.getElementById('trainLabelBadge');
+  if (msg.label) {
+    badge.textContent = msg.label.replace(/_/g, ' ').toUpperCase();
+    badge.className   = 'train-label-badge active';
+  } else {
+    badge.textContent = 'SETTLING — unlabelled';
+    badge.className   = 'train-label-badge';
+  }
+
+  if (trainTimer) clearInterval(trainTimer);
+  _updateTrainDisplay();
+  trainTimer = setInterval(() => {
+    if (trainSecsLeft > 0) trainSecsLeft--;
+    _updateTrainDisplay();
+    if (trainSecsLeft === 0) clearInterval(trainTimer);
+  }, 1000);
+}
+
+function _updateTrainDisplay() {
+  document.getElementById('trainCountdown').textContent =
+    trainSecsLeft.toString().padStart(2, '0');
+  const pct = Math.min((trainElapsed / trainTotalDur) * 100, 100);
+  document.getElementById('trainProgressBar').style.width = pct.toFixed(1) + '%';
+}
+
+function handleTrainingComplete(msg) {
+  if (trainTimer) clearInterval(trainTimer);
+  document.getElementById('trainActive').style.display   = 'none';
+  document.getElementById('trainIdle').style.display     = 'none';
+  document.getElementById('trainComplete').style.display = 'block';
+  log(`Training round ${msg.round} complete. Run generate_heatmaps.py to export windows.`, 'info');
+}
+
+// ── Classifier panel ──────────────────────────────────────────────
+const CLS_LABEL_ORDER = ['baseline', 'eyes_closed', 'arithmetic', 'imagery', 'awareness'];
+
+function handleClassifierStatus(msg) {
+  const statusEl = document.getElementById('clsStatus');
+  const countsEl = document.getElementById('clsCounts');
+
+  if (!msg.enabled) {
+    statusEl.className   = 'cls-status disabled';
+    statusEl.textContent = 'NOT ENABLED';
+    countsEl.innerHTML   = '';
+    return;
+  }
+  if (msg.demo) {
+    statusEl.className   = 'cls-status demo';
+    statusEl.textContent = 'DEMO MODE — no training data';
+  } else {
+    statusEl.className   = 'cls-status loaded';
+    statusEl.textContent = `LOADED — ${msg.total} examples`;
+  }
+
+  countsEl.innerHTML = '';
+  CLS_LABEL_ORDER.forEach(lbl => {
+    const n = (msg.counts || {})[lbl] || 0;
+    countsEl.innerHTML +=
+      `<span class="cls-count-label">${lbl.replace('_', ' ')}</span>` +
+      `<span class="cls-count-val">${n}</span>`;
+  });
+
+  const t = msg.threshold ?? 0.75;
+  document.getElementById('thresholdSlider').value = t;
+  document.getElementById('thresholdVal').textContent = t.toFixed(2);
+}
+
+function handleClassifierEvent(msg) {
+  document.getElementById('clsCommand').textContent =
+    msg.label.replace(/_/g, ' ').toUpperCase();
+  document.getElementById('clsConf').textContent =
+    `confidence ${(msg.confidence * 100).toFixed(1)} %  ·  index ${msg.index}`;
+  log(`COMMAND: ${msg.label}  (${(msg.confidence * 100).toFixed(1)}%)`, 'info');
+}
+
+document.getElementById('clsReloadBtn').onclick = () => send({ type: 'load_classifier' });
+
+const _slider = document.getElementById('thresholdSlider');
+_slider.oninput  = () => {
+  document.getElementById('thresholdVal').textContent = parseFloat(_slider.value).toFixed(2);
+};
+_slider.onchange = () => send({ type: 'set_threshold', threshold: parseFloat(_slider.value) });
 
 // ── Responsive viewport scaling ───────────────────────────────────
 // Scale the entire UI down proportionally when the viewport is smaller
